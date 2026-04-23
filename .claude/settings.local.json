@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(xcodebuild -scheme \"Budget Tracker\" -destination \"platform=iOS Simulator,name=iPhone 16 Pro\" build)",
+      "Bash(sudo xcode-select *)",
+      "Bash(DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -scheme \"Budget Tracker\" -destination \"platform=iOS Simulator,name=iPhone 16 Pro\" build)",
+      "Bash(DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -scheme \"Budget Tracker\" -destination \"generic/platform=iOS Simulator\" build)",
+      "Bash(plutil -convert json -o - \"/Users/saivineethgrandhi/Library/Developer/CoreSimulator/Devices/2EF76D18-8EA0-4764-9F76-860B168432BE/data/Containers/Data/Application/4FF97CC0-AA8E-42E3-9671-DD9EA1302A5D/Library/Preferences/personal.vineeth.Budget-Tracker.plist\")",
+      "Bash(python3 -m json.tool)",
+      "Bash(plutil -p \"/Users/saivineethgrandhi/Library/Developer/CoreSimulator/Devices/2EF76D18-8EA0-4764-9F76-860B168432BE/data/Containers/Data/Application/4FF97CC0-AA8E-42E3-9671-DD9EA1302A5D/Library/Preferences/personal.vineeth.Budget-Tracker.plist\")",
+      "Bash(python3)",
+      "Bash(xcrun devicectl *)",
+      "Bash(xcrun xctrace *)",
+      "Bash(/Applications/Xcode.app/Contents/Developer/usr/bin/devicectl list *)",
+      "Bash(/Applications/Xcode.app/Contents/Developer/usr/bin/devicectl device *)",
+      "Bash(xcodebuild -version)"
+    ]
+  }
+}
