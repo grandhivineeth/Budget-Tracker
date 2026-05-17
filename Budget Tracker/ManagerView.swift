@@ -478,6 +478,11 @@ struct AccountFormView: View {
     @State private var balanceText: String = ""
     @State private var showConfirm = false
 
+    // Mini calculator
+    @State private var calcExpression: String = ""
+    @State private var calcResult: Double? = nil
+    @State private var showCalc: Bool = false
+
     private var isEditing: Bool { account != nil }
     private var newBalance: Double { Double(balanceText) ?? 0 }
 
@@ -506,6 +511,88 @@ struct AccountFormView: View {
                             .keyboardType(.decimalPad)
                             .foregroundStyle(DS.text)
                     }
+
+                    // ── Mini Calculator ────────────────────────────────────
+                    Section {
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                showCalc.toggle()
+                                if showCalc && calcExpression.isEmpty {
+                                    calcExpression = balanceText.isEmpty ? "" : balanceText
+                                }
+                            }
+                        } label: {
+                            HStack {
+                                Image(systemName: "plusminus.circle")
+                                    .foregroundStyle(DS.blue)
+                                Text("Calculator")
+                                    .foregroundStyle(DS.text)
+                                Spacer()
+                                Image(systemName: showCalc ? "chevron.up" : "chevron.down")
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(DS.textSub)
+                            }
+                        }
+                        .buttonStyle(.plain)
+
+                        if showCalc {
+                            // Expression display
+                            VStack(alignment: .trailing, spacing: 4) {
+                                Text(calcExpression.isEmpty ? "0" : calcExpression)
+                                    .font(.system(size: 22, weight: .light, design: .monospaced))
+                                    .foregroundStyle(DS.text)
+                                    .frame(maxWidth: .infinity, alignment: .trailing)
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.5)
+                                if let r = calcResult {
+                                    Text("= \(r, format: .number.precision(.fractionLength(2)))")
+                                        .font(.system(size: 13))
+                                        .foregroundStyle(DS.textSub)
+                                        .frame(maxWidth: .infinity, alignment: .trailing)
+                                }
+                            }
+                            .padding(.vertical, 4)
+
+                            // Button grid
+                            let cols = Array(repeating: GridItem(.flexible(), spacing: 8), count: 4)
+                            LazyVGrid(columns: cols, spacing: 8) {
+                                ForEach(calcButtons, id: \.self) { btn in
+                                    Button {
+                                        calcTap(btn)
+                                    } label: {
+                                        Text(btn)
+                                            .font(.system(size: 17, weight: btn == "=" ? .semibold : .regular))
+                                            .frame(maxWidth: .infinity)
+                                            .frame(height: 44)
+                                            .background(calcBtnColor(btn))
+                                            .foregroundStyle(calcBtnFg(btn))
+                                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+
+                            // Use result button
+                            if let r = calcResult {
+                                Button {
+                                    balanceText = String(format: "%.2f", r)
+                                    calcExpression = ""
+                                    calcResult = nil
+                                } label: {
+                                    Label("Use \(r, format: .currency(code: DS.currencyCode).precision(.fractionLength(2)))",
+                                          systemImage: "arrow.up.circle.fill")
+                                        .font(.system(size: 15, weight: .medium))
+                                        .foregroundStyle(.white)
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.vertical, 10)
+                                        .background(DS.blue)
+                                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+
                     if isEditing {
                         Section {
                             Button("Delete Account", role: .destructive) {
@@ -564,6 +651,52 @@ struct AccountFormView: View {
             ))
         }
         dismiss()
+    }
+
+    // MARK: - Calculator helpers
+    private let calcButtons = [
+        "C", "←", "%", "÷",
+        "7", "8", "9", "×",
+        "4", "5", "6", "−",
+        "1", "2", "3", "+",
+        "+/-", "0", ".", "="
+    ]
+
+    private func calcBtnColor(_ btn: String) -> Color {
+        switch btn {
+        case "C", "←", "%", "+/-": return DS.surface
+        case "÷", "×", "−", "+", "=": return DS.blue
+        default: return DS.card
+        }
+    }
+    private func calcBtnFg(_ btn: String) -> Color {
+        switch btn {
+        case "÷", "×", "−", "+", "=": return .white
+        default: return DS.text
+        }
+    }
+
+    private func calcTap(_ btn: String) {
+        switch btn {
+        case "C":
+            calcExpression = ""; calcResult = nil
+        case "←":
+            if !calcExpression.isEmpty { calcExpression.removeLast() }
+        case "+/-":
+            if calcExpression.hasPrefix("-") { calcExpression.removeFirst() }
+            else if !calcExpression.isEmpty { calcExpression = "-" + calcExpression }
+        case "=":
+            let expr = calcExpression
+                .replacingOccurrences(of: "÷", with: "/")
+                .replacingOccurrences(of: "×", with: "*")
+                .replacingOccurrences(of: "−", with: "-")
+            if let r = (NSExpression(format: expr).expressionValue(with: nil, context: nil) as? NSNumber)?.doubleValue,
+               r.isFinite {
+                calcResult = r
+            }
+        default:
+            calcExpression += btn
+        }
     }
 }
 

@@ -16,13 +16,11 @@ struct MoreView: View {
 
     @State private var tab: MoreTab = .settings
     @State private var editingProfile    = false
-    @State private var showShareSheet    = false
-    @State private var showCSVSheet      = false
-    @State private var exportFileURL: URL?
     @State private var showFilePicker    = false
     @State private var showImportAlert   = false
     @State private var importError: String?
     @State private var showImportSuccess = false
+
 
     // MARK: - Body
     var body: some View {
@@ -179,6 +177,7 @@ struct MoreView: View {
                                               isLast: true) { showFilePicker = true }
                             }
 
+                            // ── iCloud Backup ─────────────────────────────
                             // ── About ─────────────────────────────────────
                             moreSectionCard(header: "ABOUT") {
                                 HStack {
@@ -201,12 +200,8 @@ struct MoreView: View {
                 }
             }
             .navigationBarHidden(true)
-            .sheet(isPresented: $editingProfile) { ProfileEditSheet(name: $profileName, email: $profileEmail) }
-            .sheet(isPresented: $showShareSheet) {
-                if let url = exportFileURL { ShareSheet(items: [url]) }
-            }
-            .sheet(isPresented: $showCSVSheet) {
-                if let url = exportFileURL { ShareSheet(items: [url]) }
+            .sheet(isPresented: $editingProfile) {
+                ProfileEditSheet(name: $profileName, email: $profileEmail)
             }
             .fileImporter(isPresented: $showFilePicker,
                           allowedContentTypes: [.json],
@@ -224,20 +219,25 @@ struct MoreView: View {
     private func exportJSON() {
         guard let data = store.exportBackup() else { return }
         let name = "BudgetTracker-\(datestamp()).json"
-        write(data: data, name: name) { showShareSheet = true }
+        presentShareSheet(data: data, name: name)
     }
 
     private func exportCSV() {
         guard let data = store.exportCSV() else { return }
         let name = "BudgetTracker-\(datestamp()).csv"
-        write(data: data, name: name) { showCSVSheet = true }
+        presentShareSheet(data: data, name: name)
     }
 
-    private func write(data: Data, name: String, then: () -> Void) {
+    private func presentShareSheet(data: Data, name: String) {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(name)
         try? data.write(to: url)
-        exportFileURL = url
-        then()
+        let av = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+        guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+              let root  = scene.windows.first(where: { $0.isKeyWindow })?.rootViewController else { return }
+        // Walk up to the topmost presented controller
+        var top = root
+        while let presented = top.presentedViewController { top = presented }
+        top.present(av, animated: true)
     }
 
     private func datestamp() -> String {
@@ -419,11 +419,3 @@ struct ProfileEditSheet: View {
     }
 }
 
-// MARK: - Share Sheet
-struct ShareSheet: UIViewControllerRepresentable {
-    let items: [Any]
-    func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: items, applicationActivities: nil)
-    }
-    func updateUIViewController(_ uvc: UIActivityViewController, context: Context) {}
-}

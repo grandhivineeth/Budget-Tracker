@@ -167,6 +167,12 @@ final class DataStore: ObservableObject {
     @Published var splitEntries: [SplitEntry] = []
     @Published var netWorthSnapshots: [NetWorthSnapshot] = []
 
+    /// The local folder where all JSON data files live.
+    static var dataDirectory: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("BudgetTrackerData", isDirectory: true)
+    }
+
     private let categoriesKey        = "categories_v2"
     private let paymentMethodsKey    = "paymentMethods_v1"
     private let transactionsKey      = "transactions_v1"
@@ -177,15 +183,21 @@ final class DataStore: ObservableObject {
     init() { load() }
 
     // MARK: Net Worth Computed
+    /// Pure bank/investment accounts only — does NOT include splitwise
     var totalAssets: Double {
         netWorthAccounts.filter { $0.type.isAsset }.reduce(0) { $0 + $1.balance }
-        + splitEntries.filter { $0.direction == .owesMe }.reduce(0) { $0 + $1.amount }
     }
+    /// Pure credit card / loan balances only — does NOT include splitwise
     var totalLiabilities: Double {
         netWorthAccounts.filter { !$0.type.isAsset }.reduce(0) { $0 + $1.balance }
-        + splitEntries.filter { $0.direction == .iOwe }.reduce(0) { $0 + $1.amount }
     }
-    var netWorth: Double { totalAssets - totalLiabilities }
+    /// Net amount owed to you (owesMe − iOwe) from splitwise entries
+    var splitwiseNet: Double {
+        let owesMe = splitEntries.filter { $0.direction == .owesMe }.reduce(0) { $0 + $1.amount }
+        let iOwe   = splitEntries.filter { $0.direction == .iOwe   }.reduce(0) { $0 + $1.amount }
+        return owesMe - iOwe
+    }
+    var netWorth: Double { totalAssets - totalLiabilities + splitwiseNet }
 
     // MARK: Snapshot — call after any Manager save
     func takeSnapshot() {
@@ -387,318 +399,22 @@ final class DataStore: ObservableObject {
 
         // Load ALL collections before calling any save()-invoking helpers
         // (prevents migrateCategoriesToUniquePaletteColors from saving empty arrays)
-        if let v = fp.load([Category].self, key: categoriesKey) {
-            categories = v
-        } else { seedCategories() }
-
-        if let v = fp.load([Transaction].self, key: transactionsKey) {
-            transactions = v
-        } else { seedTransactions() }
-
-        if let v = fp.load([NetWorthAccount].self, key: netWorthAccountsKey) {
-            netWorthAccounts = v
-        } else { seedNetWorthAccounts() }
-
-        if let v = fp.load([SplitEntry].self, key: splitEntriesKey) {
-            splitEntries = v
-        } else { seedSplitEntries() }
-
+        if let v = fp.load([Category].self, key: categoriesKey)          { categories       = v }
+        if let v = fp.load([Transaction].self, key: transactionsKey)      { transactions     = v }
+        if let v = fp.load([NetWorthAccount].self, key: netWorthAccountsKey) { netWorthAccounts = v }
+        if let v = fp.load([SplitEntry].self, key: splitEntriesKey)       { splitEntries     = v }
         if let v = fp.load([NetWorthSnapshot].self, key: netWorthSnapshotsKey) {
             netWorthSnapshots = v.sorted { $0.date < $1.date }
-        } else { seedSnapshots() }
+        }
 
         // Run category color migration AFTER all data is loaded, so save() is safe.
         migrateCategoriesToUniquePaletteColors()
-
-        // One-time imports from spreadsheet screenshots.
-        seedMarchTransactions()
-        seedAprilTransactions()
-        seedAprilLateTransactions()
-        seedSalaryIncome()
-        seedAccountBalances()
-        seedSplitwiseBalances()
 
         // Persist everything to files:
         //  • seeds that don't self-persist,
         //  • any UserDefaults → file migration that FilePersistence.load() already
         //    wrote individually (this just consolidates in one pass).
         save()
-    }
-
-    // MARK: - March 2026 one-time seed
-    /// Imports all 45 March 2026 transactions exactly once.
-    /// Guarded by a UserDefaults flag so it never runs twice.
-    private func seedMarchTransactions() {
-        let flagKey = "march2026DataSeeded"
-        guard !UserDefaults.standard.bool(forKey: flagKey) else { return }
-        UserDefaults.standard.set(true, forKey: flagKey)
-
-        // Helper: look up category UUID by name (falls back to first category)
-        func catID(_ name: String) -> UUID {
-            (categories.first { $0.name.caseInsensitiveCompare(name) == .orderedSame }
-             ?? categories.first)?.id ?? UUID()
-        }
-
-        // Helper: build a Date for March 2026
-        let cal = Calendar.current
-        func d(_ day: Int) -> Date {
-            cal.date(from: DateComponents(year: 2026, month: 3, day: day))!
-        }
-
-        // (day, title, category, amountPaid, amountBack)
-        let rows: [(Int, String, String, Double, Double)] = [
-            (1,  "Room Rent",              "Payments",  1079.22, 405.00),
-            (1,  "UPS",                    "Payments",    72.08,   0.00),
-            (1,  "Walmart Subscription",   "Payments",    13.86,   0.00),
-            (1,  "Walmart",                "Groceries",   46.67,   0.00),
-            (3,  "Lyft",                   "Travel",      11.87,   0.00),
-            (3,  "Eurest Cafe",            "Food",         9.35,   0.00),
-            (5,  "Eurest Cafe",            "Food",         5.83,   0.00),
-            (5,  "Lyft",                   "Travel",      13.58,   0.00),
-            (6,  "Birthday Expense",       "Luxury",     726.44,   0.00),
-            (6,  "Leapfinance",            "EMI",        931.23,   0.00),
-            (7,  "Merll's",                "Food",        30.79,   0.00),
-            (8,  "Black Cat",              "Food",         7.42,   0.00),
-            (9,  "Indymart Kitchen",       "Food",         5.35,   0.00),
-            (9,  "Walmart",                "Groceries",    1.34,   0.00),
-            (10, "JJ Thai",                "Food",        27.80,   0.00),
-            (10, "Indymart",               "Groceries",   10.00,   0.00),
-            (11, "Costco",                 "Groceries",   31.66,   0.00),
-            (13, "Costco Gas",             "Travel",      10.02,   0.00),
-            (13, "Desi Fresh",             "Groceries",   14.99,   0.00),
-            (13, "Desi Fresh Kitchen",     "Food",        14.97,   0.00),
-            (14, "Costco",                 "Luxury",      42.79,   0.00),
-            (14, "Indymart",               "Groceries",    5.49,   0.00),
-            (15, "Indymart",               "Groceries",   30.00,   0.00),
-            (15, "Indymart Kitchen",       "Food",        45.42,  29.94),
-            (15, "Costco Gas",             "Travel",      10.00,   0.00),
-            (16, "Dominos",                "Food",        14.96,   0.00),
-            (17, "Eurest Cafe",            "Food",         5.83,   0.00),
-            (17, "Burger Shop",            "Food",        13.64,   0.00),
-            (18, "Eurest Cafe",            "Food",         5.83,   0.00),
-            (19, "South Union Bread Cafe", "Food",        15.25,   0.00),
-            (19, "Persis Biryani",         "Food",        20.00,   0.00),
-            (19, "Walmart",                "Groceries",   33.36,   0.00),
-            (19, "Walmart",                "Luxury",      65.00,   0.00),
-            (20, "Visible",                "Payments",    25.00,   0.00),
-            (21, "Jordan Creek",           "Luxury",      11.18,   0.00),
-            (21, "Indymart",               "Groceries",   69.17,   0.00),
-            (22, "Costco",                 "Groceries",   35.80,   0.00),
-            (22, "Lyft",                   "Travel",       6.91,   0.00),
-            (23, "T-Mobile",               "Payments",    87.70,   0.00),
-            (26, "Eurest Cafe",            "Food",         5.83,   0.00),
-            (27, "Naveen Marriage Gift",   "Luxury",      67.99,  13.00),
-            (28, "Great Clips",            "Payments",    29.60,   0.00),
-            (29, "Walmart",                "Groceries",   38.85,   0.00),
-            (31, "Indymart",               "Groceries",   28.17,   0.00),
-            (31, "Lyft",                   "Travel",       7.98,   0.00),
-        ]
-
-        for (day, title, catName, paid, back) in rows {
-            transactions.append(Transaction(
-                date:        d(day),
-                title:       title,
-                categoryId:  catID(catName),
-                amountPaid:  paid,
-                amountBack:  back
-            ))
-        }
-    }
-
-    // MARK: - April 2026 one-time seed
-    private func seedAprilTransactions() {
-        let flagKey = "april2026DataSeeded"
-        guard !UserDefaults.standard.bool(forKey: flagKey) else { return }
-        UserDefaults.standard.set(true, forKey: flagKey)
-
-        func catID(_ name: String) -> UUID {
-            (categories.first { $0.name.caseInsensitiveCompare(name) == .orderedSame }
-             ?? categories.first)?.id ?? UUID()
-        }
-        let cal = Calendar.current
-        func d(_ day: Int) -> Date {
-            cal.date(from: DateComponents(year: 2026, month: 4, day: day))!
-        }
-
-        // (day, title, category, amountPaid, amountBack)
-        let rows: [(Int, String, String, Double, Double)] = [
-            (1,  "Room Rent",            "Payments",  1049.95,   0.00),
-            (1,  "Walmart Subscription", "Payments",    13.86,   0.00),
-            (2,  "Eurest Cafe",          "Food",         5.83,   0.00),
-            (5,  "Whole Food Market",    "Groceries",   17.43,   0.00),
-            (5,  "Indymart",             "Groceries",   17.73,   0.00),
-            (5,  "Persis Biryani",       "Food",        20.00,   0.00),
-            (5,  "Pittsburg Temple Trip","Luxury",     583.13, 324.35),
-            (5,  "Passport Services",    "Payments",   137.10,   0.00),
-            (7,  "Leapfinance",          "EMI",        931.23,   0.00),
-            (8,  "Walmart",              "Groceries",   49.32,   0.00),
-            (9,  "Lyft",                 "Travel",      14.40,   0.00),
-            (12, "Indymart Kitchen",     "Food",        21.69,   0.00),
-            (14, "Desi Bites",           "Food",        14.87,   0.00),
-            (14, "Cinemark",             "Luxury",       7.00,   0.00),
-            (15, "Oral Surgeons PC",     "Payments",   299.00,   0.00),
-            (15, "Lyft",                 "Travel",      25.88,   0.00),
-            (18, "Persis Biryani",       "Food",        20.00,   0.00),
-            (18, "Walmart",              "Groceries",   59.86,   0.00),
-        ]
-
-        for (day, title, catName, paid, back) in rows {
-            transactions.append(Transaction(
-                date:       d(day),
-                title:      title,
-                categoryId: catID(catName),
-                amountPaid: paid,
-                amountBack: back
-            ))
-        }
-    }
-
-    // MARK: - Splitwise balances one-time seed
-    private func seedSplitwiseBalances() {
-        let flagKey = "splitwiseBalancesSeed2026"
-        guard !UserDefaults.standard.bool(forKey: flagKey) else { return }
-        UserDefaults.standard.set(true, forKey: flagKey)
-
-        // Net balances from Splitwise (all positive = others owe us)
-        let entries: [(String, Double, SplitEntry.Direction)] = [
-            ("Anjaan",                  5.80,    .owesMe),
-            ("Lavan Theja",           195.63,    .owesMe),
-            ("Sateesh Reddy",           7.48,    .owesMe),
-            ("Srinivas Mullamuri",    134.75,    .owesMe),
-            ("Thaluru Hemanth",         7.48,    .owesMe),
-            ("Tharun Reddy Sabbasani", 6680.55,  .owesMe),
-        ]
-
-        for (name, amount, direction) in entries {
-            // Skip if this person already exists
-            guard !splitEntries.contains(where: {
-                $0.personName.caseInsensitiveCompare(name) == .orderedSame
-            }) else { continue }
-
-            splitEntries.append(SplitEntry(
-                personName: name,
-                amount:     amount,
-                direction:  direction
-            ))
-        }
-        takeSnapshot()
-    }
-
-    // MARK: - April 2026 late transactions (4/21–4/22)
-    private func seedAprilLateTransactions() {
-        let flagKey = "aprilLate2026DataSeeded"
-        guard !UserDefaults.standard.bool(forKey: flagKey) else { return }
-        UserDefaults.standard.set(true, forKey: flagKey)
-
-        func catID(_ name: String) -> UUID {
-            (categories.first { $0.name.caseInsensitiveCompare(name) == .orderedSame }
-             ?? categories.first)?.id ?? UUID()
-        }
-        let cal = Calendar.current
-        func d(_ day: Int) -> Date {
-            cal.date(from: DateComponents(year: 2026, month: 4, day: day))!
-        }
-
-        let rows: [(Int, String, String, Double)] = [
-            (21, "Eurest Cafe", "Food",      5.83),
-            (21, "Lyft",        "Travel",    6.91),
-            (21, "Indymart",    "Groceries", 62.61),
-            (21, "Amazon",      "Luxury",    26.93),
-            (22, "Lyft",        "Travel",    16.92),
-            (22, "Eurest Cafe", "Food",       4.23),
-        ]
-
-        for (day, title, catName, paid) in rows {
-            transactions.append(Transaction(
-                date:       d(day),
-                title:      title,
-                categoryId: catID(catName),
-                amountPaid: paid,
-                amountBack: 0
-            ))
-        }
-    }
-
-    // MARK: - Salary income one-time seed
-    private func seedSalaryIncome() {
-        let flagKey = "salaryIncomeSeed2026"
-        guard !UserDefaults.standard.bool(forKey: flagKey) else { return }
-        UserDefaults.standard.set(true, forKey: flagKey)
-
-        // Use first category as fallback (income type is what matters)
-        let fallbackCatID = categories.first?.id ?? UUID()
-
-        let cal = Calendar.current
-        func d(_ year: Int, _ month: Int, _ day: Int) -> Date {
-            cal.date(from: DateComponents(year: year, month: month, day: day))!
-        }
-
-        let salaries: [(Date, Double)] = [
-            (d(2026, 3, 13), 1871.17),
-            (d(2026, 3, 27), 2207.49),
-            (d(2026, 4, 10), 2885.32),
-        ]
-
-        for (date, amount) in salaries {
-            transactions.append(Transaction(
-                date:       date,
-                title:      "Salary",
-                categoryId: fallbackCatID,
-                amountPaid: amount,
-                amountBack: 0,
-                type:       .income
-            ))
-        }
-    }
-
-    // MARK: - Account balances one-time seed
-    /// Upserts all known accounts with current balances exactly once.
-    /// Matching is by name (case-insensitive); creates the account if not found.
-    private func seedAccountBalances() {
-        let flagKey = "accountBalancesSeedApril2026"
-        guard !UserDefaults.standard.bool(forKey: flagKey) else { return }
-        UserDefaults.standard.set(true, forKey: flagKey)
-
-        typealias AccountSeed = (name: String, type: NetWorthAccount.AccountType, balance: Double, icon: String, color: String)
-
-        let seeds: [AccountSeed] = [
-            // ── Checking / Savings ──────────────────────────────────
-            ("Bank of America", .checkingOrSavings, 1000.00,  "building.columns.fill",                  "#30D158"),
-            ("Chase",           .checkingOrSavings,  979.23,  "building.columns.fill",                  "#4B8BFF"),
-            ("Capital One",     .checkingOrSavings,    7.20,  "building.columns.fill",                  "#FF9F0A"),
-            ("Wells Fargo",     .checkingOrSavings, 3448.74,  "building.columns.fill",                  "#30D158"),
-            ("Rewards",         .checkingOrSavings,  134.87,  "star.fill",                              "#BF5AF2"),
-            // ── Credit Cards ────────────────────────────────────────
-            ("BofA Credit",        .creditCard, 2765.00, "creditcard.fill", "#FF453A"),
-            ("Chase Freedom",      .creditCard,    0.00, "creditcard.fill", "#4B8BFF"),
-            ("Chase Prime",        .creditCard,    0.00, "creditcard.fill", "#4B8BFF"),
-            ("Capital One Credit", .creditCard,    0.00, "creditcard.fill", "#FF9F0A"),
-            ("Capital One Savour", .creditCard,    0.00, "creditcard.fill", "#FF9F0A"),
-            ("Capital One BJs",    .creditCard,    0.00, "creditcard.fill", "#FF9F0A"),
-            ("Apple",              .creditCard,    0.00, "creditcard.fill", "#8A8A9A"),
-            ("Zolve",              .creditCard,    0.00, "creditcard.fill", "#9B7BFF"),
-            ("Discover",           .creditCard,  950.13, "creditcard.fill", "#FF9F0A"),
-            ("Amex",               .creditCard,  152.26, "creditcard.fill", "#5AC8FA"),
-        ]
-
-        for seed in seeds {
-            if let idx = netWorthAccounts.firstIndex(where: {
-                $0.name.caseInsensitiveCompare(seed.name) == .orderedSame
-            }) {
-                // Update balance on existing account
-                netWorthAccounts[idx].balance = seed.balance
-            } else {
-                // Create new account
-                netWorthAccounts.append(NetWorthAccount(
-                    name:     seed.name,
-                    type:     seed.type,
-                    balance:  seed.balance,
-                    icon:     seed.icon,
-                    colorHex: seed.color
-                ))
-            }
-        }
-        takeSnapshot()  // Record net worth after balance update
     }
 
     /// One-time fix: if any two categories share the same colorHex, reassign all
@@ -734,69 +450,6 @@ final class DataStore: ObservableObject {
         save()
     }
 
-    private func seedNetWorthAccounts() {
-        netWorthAccounts = [
-            NetWorthAccount(name: "Chase Checking",  type: .checkingOrSavings, balance: 6000, icon: "building.columns.fill",                  colorHex: "#30D158"),
-            NetWorthAccount(name: "Chase Savings",   type: .checkingOrSavings, balance: 3500, icon: "banknote.fill",                           colorHex: "#4B8BFF"),
-            NetWorthAccount(name: "Investments",     type: .investment,         balance: 1500, icon: "chart.line.uptrend.xyaxis.circle.fill",   colorHex: "#9B7BFF"),
-            NetWorthAccount(name: "Chase Credit",    type: .creditCard,         balance: 2321, icon: "creditcard.fill",                         colorHex: "#FF453A"),
-        ]
-        // save() called by load() after all collections are seeded
-    }
-
-    private func seedSplitEntries() {
-        splitEntries = [
-            SplitEntry(personName: "Alex", amount: 150, direction: .owesMe),
-            SplitEntry(personName: "Sam",  amount: 350, direction: .owesMe),
-        ]
-        // save() called by load() after all collections are seeded
-    }
-
-    private func seedSnapshots() {
-        let cal = Calendar.current
-        let now = Date()
-        func daysAgo(_ n: Int) -> Date { cal.date(byAdding: .day, value: -n, to: now) ?? now }
-        netWorthSnapshots = [
-            NetWorthSnapshot(date: daysAgo(90), netWorth: 6200,  totalAssets: 8400,  totalLiabilities: 2200),
-            NetWorthSnapshot(date: daysAgo(75), netWorth: 6850,  totalAssets: 8900,  totalLiabilities: 2050),
-            NetWorthSnapshot(date: daysAgo(60), netWorth: 7100,  totalAssets: 9200,  totalLiabilities: 2100),
-            NetWorthSnapshot(date: daysAgo(45), netWorth: 7600,  totalAssets: 9800,  totalLiabilities: 2200),
-            NetWorthSnapshot(date: daysAgo(30), netWorth: 8100,  totalAssets: 10300, totalLiabilities: 2200),
-            NetWorthSnapshot(date: daysAgo(15), netWorth: 8679,  totalAssets: 11000, totalLiabilities: 2321),
-        ]
-    }
-
-    private func seedCategories() {
-        // Use palette colours so seed data is consistent with the auto-assign palette
-        categories = [
-            Category(name: "Food & Drink",  icon: "fork.knife",   colorHex: "#FF9F0A"),
-            Category(name: "Groceries",     icon: "cart.fill",    colorHex: "#4B8BFF"),
-            Category(name: "Transport",     icon: "car.fill",     colorHex: "#30D158"),
-            Category(name: "Shopping",      icon: "bag.fill",     colorHex: "#FF453A"),
-            Category(name: "Health",        icon: "cross.fill",   colorHex: "#5AC8FA"),
-            Category(name: "Entertainment", icon: "film.fill",    colorHex: "#BF5AF2"),
-        ]
-    }
-
-
-    private func seedTransactions() {
-        guard !categories.isEmpty else { return }
-        let cal = Calendar.current
-        let now = Date()
-        func daysAgo(_ n: Int) -> Date { cal.date(byAdding: .day, value: -n, to: now) ?? now }
-        let food = categories[0].id; let transport = categories[1].id
-        let shopping = categories[2].id; let health = categories[3].id; let ent = categories[4].id
-        transactions = [
-            Transaction(date: daysAgo(1),  title: "Grocery run",   categoryId: food,      amountPaid: 85.50,  amountBack: 0),
-            Transaction(date: daysAgo(2),  title: "Uber to work",  categoryId: transport, amountPaid: 22.00,  amountBack: 0),
-            Transaction(date: daysAgo(3),  title: "Pharmacy",      categoryId: health,    amountPaid: 45.00,  amountBack: 30.00),
-            Transaction(date: daysAgo(4),  title: "Netflix",       categoryId: ent,       amountPaid: 15.49,  amountBack: 0),
-            Transaction(date: daysAgo(5),  title: "New jacket",    categoryId: shopping,  amountPaid: 120.00, amountBack: 0),
-            Transaction(date: daysAgo(20), title: "Dinner out",    categoryId: food,      amountPaid: 68.00,  amountBack: 0),
-            Transaction(date: daysAgo(22), title: "Gas",           categoryId: transport, amountPaid: 55.00,  amountBack: 0),
-            Transaction(date: daysAgo(24), title: "Movie tickets", categoryId: ent,       amountPaid: 32.00,  amountBack: 0),
-        ]
-    }
 }
 
 // MARK: - Backup

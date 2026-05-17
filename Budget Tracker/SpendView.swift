@@ -124,7 +124,7 @@ struct SpendThisMonthCard: View {
                         HStack(spacing: 2) {
                             ForEach(0..<4, id: \.self) { _ in
                                 RoundedRectangle(cornerRadius: 1)
-                                    .fill(Color.white.opacity(0.5))
+                                    .fill(DS.textSub)
                                     .frame(width: 4, height: 2)
                             }
                         }
@@ -271,12 +271,12 @@ struct SpendLineChart: View {
                     .foregroundStyle(DS.blue).symbolSize(60)
                 if let prev = selectedPrevPoint {
                     PointMark(x: .value("Day", prev.day), y: .value("Amount", prev.cumulative))
-                        .foregroundStyle(Color.gray).symbolSize(50)
+                        .foregroundStyle(DS.textSub).symbolSize(50)
                 }
             }
         }
         .chartXSelection(value: $selectedDay)
-        .chartForegroundStyleScale(["Current": DS.blue, "Previous": Color.white.opacity(0.5)])
+        .chartForegroundStyleScale(["Current": DS.blue, "Previous": DS.textSub])
         .chartLegend(.hidden)
         .chartXAxis {
             AxisMarks(values: [1, 8, 15, 22, 29]) { val in
@@ -328,7 +328,7 @@ struct SpendLineChart: View {
                     }
                     if let prev = selectedPrevPoint {
                         HStack {
-                            Circle().fill(Color.gray).frame(width: 9, height: 9)
+                            Circle().fill(DS.textSub).frame(width: 9, height: 9)
                             Text(prevMonthName).font(.system(size: 13)).foregroundStyle(DS.textSub)
                             Spacer()
                             Text(prev.cumulative, format: .currency(code: DS.currencyCode).precision(.fractionLength(0)))

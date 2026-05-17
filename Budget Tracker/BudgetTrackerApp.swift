@@ -1,4 +1,5 @@
 import SwiftUI
+import UserNotifications
 
 @main
 struct Budget_Tracker: App {
@@ -56,6 +57,8 @@ struct Budget_Tracker: App {
                     isLocked = true
                 }
                 backgroundedAt = nil
+                // Clear app icon badge every time the app becomes active
+                UNUserNotificationCenter.current().setBadgeCount(0, withCompletionHandler: nil)
             default:
                 break
             }
