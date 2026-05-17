@@ -2,7 +2,7 @@ import SwiftUI
 
 struct ContentView: View {
     @StateObject private var store = DataStore()
-    @StateObject private var nav   = NavState()
+    @EnvironmentObject var nav: NavState
 
     var body: some View {
         TabView(selection: $nav.mainTab) {
@@ -24,4 +24,4 @@ struct ContentView: View {
     }
 }
 
-#Preview { ContentView() }
+#Preview { ContentView().environmentObject(NavState()) }

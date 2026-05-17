@@ -7,9 +7,15 @@ struct Budget_Tracker: App {
     @AppStorage("appearanceMode")   private var appearanceMode:   String = "dark"
     @AppStorage("autoLockDelay")    private var autoLockDelay:    String = "immediately"
 
-    @State private var isLocked       = true
+    @StateObject private var nav        = NavState()
+    @State private var isLocked         = true
     @State private var backgroundedAt: Date? = nil
     @Environment(\.scenePhase) private var scenePhase
+
+    private func lock() {
+        isLocked = true
+        nav.mainTab = "Home"
+    }
 
     private var colorScheme: ColorScheme? {
         switch appearanceMode {
@@ -32,6 +38,7 @@ struct Budget_Tracker: App {
         WindowGroup {
             ZStack {
                 ContentView()
+                    .environmentObject(nav)
                     .preferredColorScheme(colorScheme)
 
                 if isLocked {
@@ -48,13 +55,13 @@ struct Budget_Tracker: App {
             case .background:
                 backgroundedAt = Date()
                 if lockDelaySeconds == nil {
-                    isLocked = true
+                    lock()
                 }
             case .active:
                 if let delay = lockDelaySeconds,
                    let bg = backgroundedAt,
                    Date().timeIntervalSince(bg) >= delay {
-                    isLocked = true
+                    lock()
                 }
                 backgroundedAt = nil
                 // Clear app icon badge every time the app becomes active
