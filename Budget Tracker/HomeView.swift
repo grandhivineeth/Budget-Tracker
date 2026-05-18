@@ -151,21 +151,38 @@ struct AssetsLiabilitiesCharts: View {
     var assetRatio: Double      { total > 0 ? min(store.totalAssets      / total, 1) : 0 }
     var liabilityRatio: Double  { total > 0 ? min(store.totalLiabilities / total, 1) : 0 }
 
+    // Splitwise: ratio relative to net worth (capped at 1)
+    var splitRatio: Double {
+        let nw = abs(store.netWorth)
+        guard nw > 0, store.splitwiseNet > 0 else { return 0 }
+        return min(store.splitwiseNet / nw, 1)
+    }
+
     var body: some View {
-        HStack(spacing: 12) {
+        VStack(spacing: 12) {
+            HStack(spacing: 12) {
+                ConsolidatedBarTile(
+                    title: "Assets",
+                    amount: store.totalAssets,
+                    ratio: assetRatio,
+                    color: DS.green,
+                    icon: "arrow.up.right.circle.fill"
+                )
+                ConsolidatedBarTile(
+                    title: "Liabilities",
+                    amount: store.totalLiabilities,
+                    ratio: liabilityRatio,
+                    color: DS.red,
+                    icon: "arrow.down.right.circle.fill"
+                )
+            }
             ConsolidatedBarTile(
-                title: "Assets",
-                amount: store.totalAssets,
-                ratio: assetRatio,
-                color: DS.green,
-                icon: "arrow.up.right.circle.fill"
-            )
-            ConsolidatedBarTile(
-                title: "Liabilities",
-                amount: store.totalLiabilities,
-                ratio: liabilityRatio,
-                color: DS.red,
-                icon: "arrow.down.right.circle.fill"
+                title: "Splitwise",
+                amount: store.splitwiseNet,
+                ratio: splitRatio,
+                color: DS.blue,
+                icon: "person.2.fill",
+                subtitle: store.splitwiseNet >= 0 ? "owed to you" : "you owe"
             )
         }
     }
@@ -177,6 +194,7 @@ struct ConsolidatedBarTile: View {
     let ratio: Double
     let color: Color
     let icon: String
+    var subtitle: String? = nil   // overrides the "X% of total" label when set
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -193,7 +211,7 @@ struct ConsolidatedBarTile: View {
             Text(amount, format: .currency(code: DS.currencyCode).precision(.fractionLength(0)))
                 .font(.system(size: 22, weight: .bold))
                 .tracking(-0.5)
-                .foregroundStyle(amount > 0 ? color : DS.textHint)
+                .foregroundStyle(amount != 0 ? color : DS.textHint)
 
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
@@ -208,9 +226,11 @@ struct ConsolidatedBarTile: View {
             }
             .frame(height: 8)
 
-            Text(amount > 0 ? String(format: "%.0f%%", ratio * 100) + " of total" : "None added")
-                .font(.system(size: 11))
-                .foregroundStyle(DS.textHint)
+            Text(
+                subtitle ?? (amount > 0 ? String(format: "%.0f%%", ratio * 100) + " of total" : "None added")
+            )
+            .font(.system(size: 11))
+            .foregroundStyle(DS.textHint)
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
