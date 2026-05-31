@@ -939,6 +939,9 @@ struct TxListRow: View {
     let isLast: Bool
 
     var category: Category?           { store.category(for: transaction.categoryId) }
+    var accountName: String? {
+        transaction.accountId.flatMap { id in store.netWorthAccounts.first { $0.id == id }?.name }
+    }
 
     var body: some View {
         HStack(spacing: 14) {
@@ -961,7 +964,9 @@ struct TxListRow: View {
                 Text(transaction.title)
                     .font(.system(size: 15, weight: .medium))
                     .foregroundStyle(DS.text)
-                Text("\(category?.name ?? "") · \(transaction.date.formatted(.dateTime.month(.abbreviated).day()))")
+                let subtitleParts = [category?.name, accountName, transaction.date.formatted(.dateTime.month(.abbreviated).day())]
+                    .compactMap { $0 }.filter { !$0.isEmpty }
+                Text(subtitleParts.joined(separator: " · "))
                     .font(.system(size: 12))
                     .foregroundStyle(DS.textSub)
             }
@@ -1044,6 +1049,9 @@ struct TransactionRow: View {
     var isLast: Bool = false
 
     var category: Category?           { store.category(for: transaction.categoryId) }
+    var accountName: String? {
+        transaction.accountId.flatMap { id in store.netWorthAccounts.first { $0.id == id }?.name }
+    }
 
     var body: some View {
         HStack(spacing: 14) {
@@ -1056,7 +1064,9 @@ struct TransactionRow: View {
                 Text(transaction.title)
                     .font(.system(size: 15, weight: .medium))
                     .foregroundStyle(DS.text)
-                Text("\(category?.name ?? "") · \(transaction.date.formatted(.dateTime.month(.abbreviated).day()))")
+                let subtitleParts = [category?.name, accountName, transaction.date.formatted(.dateTime.month(.abbreviated).day())]
+                    .compactMap { $0 }.filter { !$0.isEmpty }
+                Text(subtitleParts.joined(separator: " · "))
                     .font(.system(size: 12))
                     .foregroundStyle(DS.textSub)
                     .lineLimit(1)

@@ -3,20 +3,23 @@ import SwiftUI
 // MARK: - Manager Tab
 
 enum ManagerTab: String, CaseIterable {
-    case overview   = "Overview"
-    case assets     = "Assets"
+    case overview    = "Overview"
+    case assets      = "Assets"
     case liabilities = "Liabilities"
-    case splitwise  = "Splitwise"
+    case splitwise   = "Splitwise"
+    case transfers   = "Transfers"
 }
 
 struct ManagerView: View {
     @EnvironmentObject var store: DataStore
     @Environment(\.dismiss) var dismiss
     @State private var tab: ManagerTab = .overview
-    @State private var showAddAccount = false
-    @State private var showAddSplit   = false
+    @State private var showAddAccount  = false
+    @State private var showAddSplit    = false
+    @State private var showAddTransfer = false
     @State private var editAccount: NetWorthAccount?
     @State private var editSplit: SplitEntry?
+    @State private var editTransfer: AccountTransfer?
 
     var isSheet: Bool = false
 
@@ -44,13 +47,16 @@ struct ManagerView: View {
                         HStack {
                             Spacer()
                             Button {
-                                if tab == .splitwise { showAddSplit = true }
-                                else { showAddAccount = true }
+                                switch tab {
+                                case .splitwise:  showAddSplit    = true
+                                case .transfers:  showAddTransfer = true
+                                default:          showAddAccount  = true
+                                }
                             } label: {
                                 HStack(spacing: 6) {
                                     Image(systemName: "plus")
                                         .font(.system(size: 13, weight: .bold))
-                                    Text(tab == .splitwise ? "Add Person" : "Add Account")
+                                    Text(tab == .splitwise ? "Add Person" : tab == .transfers ? "Add Transfer" : "Add Account")
                                         .font(.system(size: 13, weight: .semibold))
                                 }
                                 .foregroundStyle(DS.blue)
@@ -79,14 +85,18 @@ struct ManagerView: View {
                         ManagerAccountsTab(accounts: liabilities, onAdd: { showAddAccount = true }, onEdit: { editAccount = $0 })
                     case .splitwise:
                         ManagerSplitTab(onAdd: { showAddSplit = true }, onEdit: { editSplit = $0 })
+                    case .transfers:
+                        TransfersTab(onAdd: { showAddTransfer = true }, onEdit: { editTransfer = $0 })
                     }
                 }
             }
             .navigationBarHidden(true)
-            .sheet(isPresented: $showAddAccount) { AccountFormView() }
-            .sheet(isPresented: $showAddSplit)   { SplitFormView() }
-            .sheet(item: $editAccount) { AccountFormView(account: $0) }
-            .sheet(item: $editSplit)   { SplitFormView(entry: $0) }
+            .sheet(isPresented: $showAddAccount)  { AccountFormView() }
+            .sheet(isPresented: $showAddSplit)    { SplitFormView() }
+            .sheet(isPresented: $showAddTransfer) { TransferFormView() }
+            .sheet(item: $editAccount)  { AccountFormView(account: $0) }
+            .sheet(item: $editSplit)    { SplitFormView(entry: $0) }
+            .sheet(item: $editTransfer) { TransferFormView(transfer: $0) }
         }
     }
 
@@ -797,6 +807,254 @@ struct SplitFormView: View {
         } else {
             store.addSplitEntry(SplitEntry(personName: personName, amount: amount, direction: direction))
         }
+        dismiss()
+    }
+}
+
+// MARK: - Transfers Tab
+
+struct TransfersTab: View {
+    @EnvironmentObject var store: DataStore
+    let onAdd:  () -> Void
+    let onEdit: (AccountTransfer) -> Void
+
+    var transfers: [AccountTransfer] { store.accountTransfers.sorted { $0.date > $1.date } }
+
+    var body: some View {
+        ScrollView(showsIndicators: false) {
+            VStack(spacing: 14) {
+                if transfers.isEmpty {
+                    EmptyStateView(message: "No transfers yet — tap + to add")
+                        .padding(.top, 60)
+                } else {
+                    PageTile(header: "\(transfers.count) transfer\(transfers.count == 1 ? "" : "s")", chevron: false) {
+                        VStack(spacing: 0) {
+                            ForEach(Array(transfers.enumerated()), id: \.element.id) { idx, t in
+                                TransferRow(transfer: t, isLast: idx == transfers.count - 1)
+                                    .onTapGesture { onEdit(t) }
+                            }
+                        }
+                        .padding(.bottom, 8)
+                    }
+                }
+                Spacer(minLength: 100)
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 16)
+        }
+    }
+}
+
+struct TransferRow: View {
+    @EnvironmentObject var store: DataStore
+    let transfer: AccountTransfer
+    var isLast: Bool = false
+
+    var fromName: String { store.netWorthAccounts.first { $0.id == transfer.fromAccountId }?.name ?? "Unknown" }
+    var toName:   String { store.netWorthAccounts.first { $0.id == transfer.toAccountId   }?.name ?? "Unknown" }
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Image(systemName: "arrow.right.circle.fill")
+                .font(.system(size: 30))
+                .foregroundStyle(DS.blue)
+                .frame(width: 38, height: 38)
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 4) {
+                    Text(fromName).foregroundStyle(DS.text)
+                    Image(systemName: "arrow.right").font(.system(size: 10)).foregroundStyle(DS.textSub)
+                    Text(toName).foregroundStyle(DS.text)
+                }
+                .font(.system(size: 14, weight: .medium))
+                let parts = [transfer.date.formatted(.dateTime.month(.abbreviated).day().year()),
+                             transfer.note.isEmpty ? nil : transfer.note].compactMap { $0 }
+                Text(parts.joined(separator: " · "))
+                    .font(.system(size: 12))
+                    .foregroundStyle(DS.textSub)
+            }
+
+            Spacer()
+
+            Text(transfer.amount, format: .currency(code: DS.currencyCode))
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(DS.blue)
+        }
+        .padding(.vertical, 14)
+        .padding(.horizontal, 16)
+        .overlay(alignment: .bottom) {
+            if !isLast {
+                Rectangle().fill(DS.cardBorder).frame(height: 1).padding(.leading, 68)
+            }
+        }
+    }
+}
+
+// MARK: - Transfer Form
+
+struct TransferFormView: View {
+    @EnvironmentObject var store: DataStore
+    @Environment(\.dismiss) var dismiss
+    var transfer: AccountTransfer?
+
+    @State private var date           = Date()
+    @State private var amountText     = ""
+    @State private var fromAccountId: UUID?
+    @State private var toAccountId:   UUID?
+    @State private var note           = ""
+    @State private var triedSave      = false
+    @State private var showFromPicker = false
+    @State private var showToPicker   = false
+
+    var isEditing: Bool { transfer != nil }
+
+    private var fromAccount: NetWorthAccount? { fromAccountId.flatMap { id in store.netWorthAccounts.first { $0.id == id } } }
+    private var toAccount:   NetWorthAccount? { toAccountId.flatMap   { id in store.netWorthAccounts.first { $0.id == id } } }
+    private var isValid: Bool {
+        fromAccountId != nil && toAccountId != nil
+        && fromAccountId != toAccountId
+        && (Double(amountText) ?? 0) > 0
+    }
+
+    /// Bank/checking/investment accounts (money flows out)
+    private var sourceAccounts: [NetWorthAccount] { store.netWorthAccounts.filter { $0.type.isAsset } }
+    /// Credit card / loan accounts (debt being paid off)
+    private var destAccounts:   [NetWorthAccount] { store.netWorthAccounts.filter { !$0.type.isAsset } }
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                DS.bg.ignoresSafeArea()
+                Form {
+                    Section {
+                        DatePicker("Date", selection: $date, displayedComponents: .date)
+                        HStack {
+                            Text("Amount")
+                            Spacer()
+                            TextField("0.00", text: $amountText)
+                                .keyboardType(.decimalPad)
+                                .multilineTextAlignment(.trailing)
+                                .foregroundStyle(DS.blue)
+                        }
+                        TextField("Note (optional)", text: $note)
+                    }
+                    .listRowBackground(DS.card)
+
+                    Section("From (Bank Account)") {
+                        if sourceAccounts.isEmpty {
+                            Text("Add a Checking / Investment account in Assets first.")
+                                .foregroundStyle(DS.textSub)
+                                .font(.system(size: 13))
+                        } else {
+                            ForEach(sourceAccounts) { acct in
+                                Button { fromAccountId = acct.id } label: {
+                                    HStack {
+                                        Image(systemName: acct.type.icon)
+                                            .foregroundStyle(acct.color)
+                                            .frame(width: 28)
+                                        Text(acct.name).foregroundStyle(DS.text)
+                                        Spacer()
+                                        Text(acct.balance, format: .currency(code: DS.currencyCode))
+                                            .foregroundStyle(DS.textSub)
+                                            .font(.system(size: 13))
+                                        if fromAccountId == acct.id {
+                                            Image(systemName: "checkmark")
+                                                .font(.system(size: 13, weight: .semibold))
+                                                .foregroundStyle(DS.blue)
+                                        }
+                                    }
+                                }
+                                .listRowBackground(DS.card)
+                            }
+                        }
+                    }
+
+                    Section("To (Credit Card / Loan)") {
+                        if destAccounts.isEmpty {
+                            Text("Add a Credit Card / Loan account in Liabilities first.")
+                                .foregroundStyle(DS.textSub)
+                                .font(.system(size: 13))
+                        } else {
+                            ForEach(destAccounts) { acct in
+                                Button { toAccountId = acct.id } label: {
+                                    HStack {
+                                        Image(systemName: acct.type.icon)
+                                            .foregroundStyle(acct.color)
+                                            .frame(width: 28)
+                                        Text(acct.name).foregroundStyle(DS.text)
+                                        Spacer()
+                                        Text(acct.balance, format: .currency(code: DS.currencyCode))
+                                            .foregroundStyle(DS.textSub)
+                                            .font(.system(size: 13))
+                                        if toAccountId == acct.id {
+                                            Image(systemName: "checkmark")
+                                                .font(.system(size: 13, weight: .semibold))
+                                                .foregroundStyle(DS.blue)
+                                        }
+                                    }
+                                }
+                                .listRowBackground(DS.card)
+                            }
+                        }
+                    }
+
+                    if isEditing {
+                        Section {
+                            Button(role: .destructive) { deleteAndDismiss() } label: {
+                                Label("Delete Transfer", systemImage: "trash")
+                                    .frame(maxWidth: .infinity, alignment: .center)
+                            }
+                        }
+                        .listRowBackground(DS.card)
+                    }
+                }
+                .scrollContentBackground(.hidden)
+            }
+            .navigationTitle(isEditing ? "Edit Transfer" : "New Transfer")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(DS.bg, for: .navigationBar)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }.foregroundStyle(DS.blue)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        if isValid { saveAndDismiss() } else { triedSave = true }
+                    }
+                    .fontWeight(.semibold)
+                    .foregroundStyle(DS.blue)
+                }
+            }
+            .onAppear { prefill() }
+        }
+        .preferredColorScheme(.dark)
+    }
+
+    private func prefill() {
+        guard let t = transfer else { return }
+        date          = t.date
+        amountText    = String(t.amount)
+        fromAccountId = t.fromAccountId
+        toAccountId   = t.toAccountId
+        note          = t.note
+    }
+
+    private func saveAndDismiss() {
+        let amount = Double(amountText) ?? 0
+        let from   = fromAccountId!
+        let to     = toAccountId!
+        if let ex = transfer {
+            // Delete old to reverse balances, then add new
+            store.deleteTransfer(ex)
+            store.addTransfer(AccountTransfer(date: date, amount: amount, fromAccountId: from, toAccountId: to, note: note))
+        } else {
+            store.addTransfer(AccountTransfer(date: date, amount: amount, fromAccountId: from, toAccountId: to, note: note))
+        }
+        dismiss()
+    }
+
+    private func deleteAndDismiss() {
+        if let t = transfer { store.deleteTransfer(t) }
         dismiss()
     }
 }

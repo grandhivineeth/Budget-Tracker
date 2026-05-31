@@ -83,6 +83,7 @@ struct Transaction: Identifiable, Codable {
     var amountPaid: Double
     var amountBack: Double
     var type: TransactionType = .spend
+    var accountId: UUID? = nil   // linked NetWorthAccount (nil = unlinked / legacy)
 
     enum TransactionType: String, Codable, CaseIterable {
         case spend  = "Spend"
@@ -98,6 +99,17 @@ struct Transaction: Identifiable, Codable {
 
 final class NavState: ObservableObject {
     @Published var mainTab: String = "Home"
+}
+
+/// A payment from a bank/checking account to a credit card (pays down card debt).
+/// Not visible in transaction lists — tracked separately so balances stay accurate.
+struct AccountTransfer: Identifiable, Codable {
+    var id: UUID = UUID()
+    var date: Date
+    var amount: Double
+    var fromAccountId: UUID   // bank / checking — balance decreases
+    var toAccountId: UUID     // credit card / loan — balance decreases (debt reduced)
+    var note: String = ""
 }
 
 // MARK: - File-Based Persistence
@@ -166,6 +178,7 @@ final class DataStore: ObservableObject {
     @Published var netWorthAccounts: [NetWorthAccount] = []
     @Published var splitEntries: [SplitEntry] = []
     @Published var netWorthSnapshots: [NetWorthSnapshot] = []
+    @Published var accountTransfers: [AccountTransfer] = []
 
     /// The local folder where all JSON data files live.
     static var dataDirectory: URL {
@@ -173,12 +186,13 @@ final class DataStore: ObservableObject {
             .appendingPathComponent("BudgetTrackerData", isDirectory: true)
     }
 
-    private let categoriesKey        = "categories_v2"
-    private let paymentMethodsKey    = "paymentMethods_v1"
-    private let transactionsKey      = "transactions_v1"
-    private let netWorthAccountsKey  = "netWorthAccounts_v1"
-    private let splitEntriesKey      = "splitEntries_v1"
-    private let netWorthSnapshotsKey = "netWorthSnapshots_v1"
+    private let categoriesKey         = "categories_v2"
+    private let paymentMethodsKey     = "paymentMethods_v1"
+    private let transactionsKey       = "transactions_v1"
+    private let netWorthAccountsKey   = "netWorthAccounts_v1"
+    private let splitEntriesKey       = "splitEntries_v1"
+    private let netWorthSnapshotsKey  = "netWorthSnapshots_v1"
+    private let accountTransfersKey   = "accountTransfers_v1"
 
     init() { load() }
 
@@ -349,12 +363,75 @@ final class DataStore: ObservableObject {
         }.reversed()
     }
 
-    // MARK: CRUD — Transactions
-    func addTransaction(_ t: Transaction)    { transactions.append(t); save() }
-    func updateTransaction(_ t: Transaction) {
-        if let i = transactions.firstIndex(where: { $0.id == t.id }) { transactions[i] = t; save() }
+    // MARK: Balance Delta Helpers
+
+    /// How much a transaction changes the linked account's balance.
+    /// Spend from asset (checking): balance goes down. Spend on liability (credit): balance goes up.
+    /// Income to asset: balance goes up. Income to liability: balance goes down (paying off debt).
+    private func balanceDelta(for tx: Transaction) -> Double {
+        guard let accId = tx.accountId,
+              let acc = netWorthAccounts.first(where: { $0.id == accId }) else { return 0 }
+        let net = tx.amountPaid - tx.amountBack
+        switch tx.type {
+        case .spend:  return acc.type.isAsset ? -net    : +net
+        case .income: return acc.type.isAsset ? +tx.amountPaid : -tx.amountPaid
+        }
     }
-    func deleteTransaction(_ t: Transaction) { transactions.removeAll { $0.id == t.id }; save() }
+
+    /// Reverses `old` delta then applies `new` delta, then saves/snapshots.
+    private func applyBalanceDeltas(reverse old: Transaction?, apply new: Transaction?) {
+        var changed = false
+        if let o = old, let id = o.accountId,
+           let i = netWorthAccounts.firstIndex(where: { $0.id == id }) {
+            netWorthAccounts[i].balance -= balanceDelta(for: o)
+            changed = true
+        }
+        if let n = new, let id = n.accountId,
+           let i = netWorthAccounts.firstIndex(where: { $0.id == id }) {
+            netWorthAccounts[i].balance += balanceDelta(for: n)
+            changed = true
+        }
+        if changed { takeSnapshot() } else { save() }
+    }
+
+    // MARK: CRUD — Transfers (Credit Card Payments)
+    func addTransfer(_ t: AccountTransfer) {
+        if let i = netWorthAccounts.firstIndex(where: { $0.id == t.fromAccountId }) {
+            netWorthAccounts[i].balance -= t.amount
+        }
+        if let i = netWorthAccounts.firstIndex(where: { $0.id == t.toAccountId }) {
+            netWorthAccounts[i].balance -= t.amount
+        }
+        accountTransfers.append(t)
+        takeSnapshot()
+    }
+
+    func deleteTransfer(_ t: AccountTransfer) {
+        if let i = netWorthAccounts.firstIndex(where: { $0.id == t.fromAccountId }) {
+            netWorthAccounts[i].balance += t.amount
+        }
+        if let i = netWorthAccounts.firstIndex(where: { $0.id == t.toAccountId }) {
+            netWorthAccounts[i].balance += t.amount
+        }
+        accountTransfers.removeAll { $0.id == t.id }
+        takeSnapshot()
+    }
+
+    // MARK: CRUD — Transactions
+    func addTransaction(_ t: Transaction) {
+        transactions.append(t)
+        applyBalanceDeltas(reverse: nil, apply: t)
+    }
+    func updateTransaction(_ t: Transaction) {
+        guard let i = transactions.firstIndex(where: { $0.id == t.id }) else { return }
+        let old = transactions[i]
+        transactions[i] = t
+        applyBalanceDeltas(reverse: old, apply: t)
+    }
+    func deleteTransaction(_ t: Transaction) {
+        transactions.removeAll { $0.id == t.id }
+        applyBalanceDeltas(reverse: t, apply: nil)
+    }
 
     // MARK: Category color palette
     static let categoryColorPalette: [String] = [
@@ -392,6 +469,7 @@ final class DataStore: ObservableObject {
         fp.save(netWorthAccounts,  key: netWorthAccountsKey)
         fp.save(splitEntries,      key: splitEntriesKey)
         fp.save(netWorthSnapshots, key: netWorthSnapshotsKey)
+        fp.save(accountTransfers,  key: accountTransfersKey)
     }
 
     func load() {
@@ -406,6 +484,7 @@ final class DataStore: ObservableObject {
         if let v = fp.load([NetWorthSnapshot].self, key: netWorthSnapshotsKey) {
             netWorthSnapshots = v.sorted { $0.date < $1.date }
         }
+        if let v = fp.load([AccountTransfer].self, key: accountTransfersKey) { accountTransfers = v }
 
         // Run category color migration AFTER all data is loaded, so save() is safe.
         migrateCategoriesToUniquePaletteColors()
@@ -461,22 +540,25 @@ struct AppBackup: Codable {
     let netWorthAccounts: [NetWorthAccount]
     let splitEntries: [SplitEntry]
     let netWorthSnapshots: [NetWorthSnapshot]
+    var accountTransfers: [AccountTransfer] = []
 }
 
 extension DataStore {
     func exportCSV() -> Data? {
         let fmt = DateFormatter()
         fmt.dateFormat = "yyyy-MM-dd"
-        var rows = ["Date,Title,Category,Type,Amount Paid,Amount Back,Net Amount"]
+        var rows = ["Date,Title,Category,Account,Type,Amount Paid,Amount Back,Net Amount"]
         for tx in transactions.sorted(by: { $0.date > $1.date }) {
             let cat  = category(for: tx.categoryId)?.name ?? "Unknown"
+            let acct = tx.accountId.flatMap { id in netWorthAccounts.first { $0.id == id }?.name } ?? ""
             let date = fmt.string(from: tx.date)
             let net  = tx.isIncome ? tx.amountPaid : max(0, tx.amountPaid - tx.amountBack)
             let type = tx.isIncome ? "Income" : "Spend"
             // Escape commas in text fields
             let title = tx.title.contains(",") ? "\"\(tx.title)\"" : tx.title
             let catE  = cat.contains(",")      ? "\"\(cat)\""      : cat
-            rows.append("\(date),\(title),\(catE),\(type),\(tx.amountPaid),\(tx.amountBack),\(net)")
+            let acctE = acct.contains(",")     ? "\"\(acct)\""     : acct
+            rows.append("\(date),\(title),\(catE),\(acctE),\(type),\(tx.amountPaid),\(tx.amountBack),\(net)")
         }
         return rows.joined(separator: "\n").data(using: .utf8)
     }
@@ -488,7 +570,8 @@ extension DataStore {
             transactions: transactions,
             netWorthAccounts: netWorthAccounts,
             splitEntries: splitEntries,
-            netWorthSnapshots: netWorthSnapshots
+            netWorthSnapshots: netWorthSnapshots,
+            accountTransfers: accountTransfers
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -505,6 +588,7 @@ extension DataStore {
         netWorthAccounts  = backup.netWorthAccounts
         splitEntries      = backup.splitEntries
         netWorthSnapshots = backup.netWorthSnapshots
+        accountTransfers  = backup.accountTransfers
         save()
     }
 }

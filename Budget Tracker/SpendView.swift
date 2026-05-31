@@ -1408,6 +1408,7 @@ struct SpendCategoryBreakdownCard: View {
     @State private var section: BSection = .income
     @State private var showAll = false
     @State private var selectedCategoryId: UUID? = nil
+    @State private var categoryFilters: Set<UUID> = []   // empty = show all
 
     private struct CatSlice: Identifiable {
         let id: UUID; let name: String; let icon: String
@@ -1422,6 +1423,11 @@ struct SpendCategoryBreakdownCard: View {
         }.sorted { $0.amount > $1.amount }
     }
     private var totalExpense: Double { expenseSlices.reduce(0) { $0 + $1.amount } }
+
+    private var filteredSlices: [CatSlice] {
+        categoryFilters.isEmpty ? expenseSlices : expenseSlices.filter { categoryFilters.contains($0.id) }
+    }
+    private var filteredTotal: Double { filteredSlices.reduce(0) { $0 + $1.amount } }
 
     private struct IncomeItem: Identifiable {
         let id: UUID
@@ -1478,7 +1484,7 @@ struct SpendCategoryBreakdownCard: View {
             }
         }
         .background(RoundedRectangle(cornerRadius: 20).fill(DS.card))
-        .onChange(of: selectedMonth) { _, _ in showAll = false }
+        .onChange(of: selectedMonth) { _, _ in showAll = false; categoryFilters.removeAll() }
         .sheet(item: Binding(
             get: { selectedCategoryId.flatMap { id in expenseSlices.first { $0.id == id } } },
             set: { _ in selectedCategoryId = nil }
@@ -1515,12 +1521,64 @@ struct SpendCategoryBreakdownCard: View {
     // ── Expenses ────────────────────────────────────────────────────────────
     @ViewBuilder
     private var expensesBody: some View {
-        // Donut
+
+        // ── Category filter chips ──────────────────────────────────────────
+        if !expenseSlices.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    // "All" chip
+                    let allActive = categoryFilters.isEmpty
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.15)) { categoryFilters.removeAll() }
+                    } label: {
+                        Text("All")
+                            .font(.system(size: 13, weight: allActive ? .semibold : .regular))
+                            .foregroundStyle(allActive ? DS.text : DS.textSub)
+                            .padding(.horizontal, 12).padding(.vertical, 6)
+                            .background(
+                                Capsule().fill(allActive ? DS.surface : Color.clear)
+                                    .overlay(Capsule().stroke(allActive ? DS.cardBorder : DS.textHint.opacity(0.3), lineWidth: 1))
+                            )
+                    }
+                    .buttonStyle(.plain)
+
+                    ForEach(expenseSlices) { s in
+                        let active = categoryFilters.contains(s.id)
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.15)) {
+                                if active { categoryFilters.remove(s.id) }
+                                else      { categoryFilters.insert(s.id) }
+                            }
+                        } label: {
+                            HStack(spacing: 5) {
+                                Image(systemName: s.icon)
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(active ? .white : s.chartColor)
+                                Text(s.name)
+                                    .font(.system(size: 13, weight: active ? .semibold : .regular))
+                                    .foregroundStyle(active ? .white : DS.text)
+                            }
+                            .padding(.horizontal, 12).padding(.vertical, 6)
+                            .background(
+                                Capsule().fill(active ? s.chartColor : Color.clear)
+                                    .overlay(Capsule().stroke(active ? s.chartColor : DS.textHint.opacity(0.3), lineWidth: 1))
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 18)
+                .padding(.vertical, 12)
+            }
+            Divider().background(DS.cardBorder)
+        }
+
+        // ── Donut ──────────────────────────────────────────────────────────
         ZStack {
-            if expenseSlices.isEmpty {
+            if filteredSlices.isEmpty {
                 Circle().stroke(DS.surface, lineWidth: 14).frame(width: 170, height: 170)
             } else {
-                Chart(expenseSlices) { s in
+                Chart(filteredSlices) { s in
                     SectorMark(
                         angle: .value("Amount", s.amount),
                         innerRadius: .ratio(0.83),
@@ -1530,12 +1588,12 @@ struct SpendCategoryBreakdownCard: View {
                     .cornerRadius(3)
                 }
                 .frame(width: 170, height: 170)
-                .animation(.easeInOut(duration: 0.08), value: selectedMonth)
+                .animation(.easeInOut(duration: 0.08), value: categoryFilters)
             }
             VStack(spacing: 3) {
-                Text(totalExpense, format: .currency(code: DS.currencyCode).precision(.fractionLength(0)))
+                Text(filteredTotal, format: .currency(code: DS.currencyCode).precision(.fractionLength(0)))
                     .font(.system(size: 20, weight: .bold)).foregroundStyle(DS.text)
-                Text("Spent this month")
+                Text(categoryFilters.isEmpty ? "Spent this month" : "Selected total")
                     .font(.system(size: 12)).foregroundStyle(DS.textSub)
             }
         }
@@ -1544,7 +1602,8 @@ struct SpendCategoryBreakdownCard: View {
 
         Divider().background(DS.cardBorder)
 
-        let displayed = showAll ? expenseSlices : Array(expenseSlices.prefix(4))
+        // ── Category list ──────────────────────────────────────────────────
+        let displayed = showAll ? filteredSlices : Array(filteredSlices.prefix(4))
         ForEach(displayed) { s in
             Button { selectedCategoryId = s.id } label: {
                 HStack(spacing: 14) {
@@ -1573,7 +1632,7 @@ struct SpendCategoryBreakdownCard: View {
             Divider().background(DS.cardBorder).padding(.leading, 70)
         }
 
-        if expenseSlices.count > 4 {
+        if filteredSlices.count > 4 {
             Button {
                 withAnimation(.easeInOut(duration: 0.1)) { showAll.toggle() }
             } label: {
