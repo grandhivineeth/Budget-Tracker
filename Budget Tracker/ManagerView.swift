@@ -226,7 +226,8 @@ struct PersonGroup: Identifiable {
 struct SettleTarget: Identifiable {
     let id = UUID()
     let personName: String
-    let owedTotal: Double
+    let amount: Double                    // net amount owed in this direction
+    let direction: SplitEntry.Direction   // owesMe → they pay you; iOwe → you pay them
 }
 struct PersonRef: Identifiable {
     let id = UUID()
@@ -257,7 +258,7 @@ struct ManagerSplitTab: View {
                             VStack(spacing: 0) {
                                 ForEach(Array(owesMeGroups.enumerated()), id: \.element.id) { idx, g in
                                     PersonGroupRow(group: g, isLast: idx == owesMeGroups.count - 1,
-                                                   onSettle: { onSettle(SettleTarget(personName: g.personName, owedTotal: g.total)) })
+                                                   onSettle: { onSettle(SettleTarget(personName: g.personName, amount: g.total, direction: .owesMe)) })
                                         .onTapGesture { onTapGroup(PersonRef(personName: g.personName, direction: .owesMe)) }
                                 }
                             }
@@ -270,7 +271,8 @@ struct ManagerSplitTab: View {
                         PageTile(header: "I Owe", chevron: false) {
                             VStack(spacing: 0) {
                                 ForEach(Array(iOweGroups.enumerated()), id: \.element.id) { idx, g in
-                                    PersonGroupRow(group: g, isLast: idx == iOweGroups.count - 1)
+                                    PersonGroupRow(group: g, isLast: idx == iOweGroups.count - 1,
+                                                   onSettle: { onSettle(SettleTarget(personName: g.personName, amount: g.total, direction: .iOwe)) })
                                         .onTapGesture { onTapGroup(PersonRef(personName: g.personName, direction: .iOwe)) }
                                 }
                             }
@@ -575,9 +577,9 @@ struct PersonGroupRow: View {
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(tint)
 
-                if group.direction == .owesMe, let onSettle {
+                if let onSettle {
                     Button(action: onSettle) {
-                        Text("Mark paid")
+                        Text(group.direction == .owesMe ? "Mark paid" : "Pay back")
                             .font(.system(size: 11, weight: .semibold))
                             .foregroundStyle(DS.blue)
                             .padding(.horizontal, 9).padding(.vertical, 3)
@@ -668,8 +670,9 @@ struct SplitSettleSheet: View {
 
     private var assetAccounts: [NetWorthAccount] { store.netWorthAccounts.filter { $0.type.isAsset } }
     private var amount: Double { Double(amountText) ?? 0 }
+    private var isReceiving: Bool { target.direction == .owesMe }   // they pay you vs you pay them
     private var isValid: Bool {
-        amount > 0 && amount <= target.owedTotal + 0.005 && accountId != nil
+        amount > 0 && amount <= target.amount + 0.005 && accountId != nil
     }
 
     var body: some View {
@@ -679,33 +682,33 @@ struct SplitSettleSheet: View {
                 Form {
                     Section {
                         HStack {
-                            Text("\(target.personName) owes")
+                            Text(isReceiving ? "\(target.personName) owes" : "You owe \(target.personName)")
                                 .foregroundStyle(DS.text)
                             Spacer()
-                            Text(target.owedTotal, format: .currency(code: DS.currencyCode))
-                                .foregroundStyle(DS.green)
+                            Text(target.amount, format: .currency(code: DS.currencyCode))
+                                .foregroundStyle(isReceiving ? DS.green : DS.red)
                         }
                     }
                     .listRowBackground(DS.card)
 
-                    Section("Amount received") {
+                    Section(isReceiving ? "Amount received" : "Amount paid") {
                         HStack {
                             Text("Amount")
                             Spacer()
                             TextField("0.00", text: $amountText)
                                 .keyboardType(.decimalPad)
                                 .multilineTextAlignment(.trailing)
-                                .foregroundStyle(DS.green)
+                                .foregroundStyle(isReceiving ? DS.green : DS.red)
                         }
                         Button("Use full amount") {
-                            amountText = String(format: "%.2f", target.owedTotal)
+                            amountText = String(format: "%.2f", target.amount)
                         }
                         .font(.system(size: 13))
                         .foregroundStyle(DS.blue)
                     }
                     .listRowBackground(DS.card)
 
-                    Section("Deposit into") {
+                    Section(isReceiving ? "Deposit into" : "Pay from") {
                         if assetAccounts.isEmpty {
                             Text("Add a checking / savings account first.")
                                 .foregroundStyle(DS.textSub).font(.system(size: 13))
@@ -733,7 +736,7 @@ struct SplitSettleSheet: View {
 
                     if triedSave && !isValid {
                         Section {
-                            Text("Enter an amount up to the owed total and pick an account.")
+                            Text("Enter an amount up to the total and pick an account.")
                                 .font(.system(size: 12)).foregroundStyle(DS.red)
                         }
                         .listRowBackground(DS.card)
@@ -741,7 +744,7 @@ struct SplitSettleSheet: View {
                 }
                 .scrollContentBackground(.hidden)
             }
-            .navigationTitle("Mark as Paid")
+            .navigationTitle(isReceiving ? "Mark as Paid" : "Pay Back")
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(DS.bg, for: .navigationBar)
             .toolbar {
@@ -749,9 +752,13 @@ struct SplitSettleSheet: View {
                     Button("Cancel") { dismiss() }.foregroundStyle(DS.blue)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Settle") {
+                    Button(isReceiving ? "Settle" : "Pay") {
                         if isValid, let acc = accountId {
-                            store.settlePerson(target.personName, amount: amount, into: acc)
+                            if isReceiving {
+                                store.settlePerson(target.personName, amount: amount, into: acc)
+                            } else {
+                                store.payBackPerson(target.personName, amount: amount, from: acc)
+                            }
                             dismiss()
                         } else { triedSave = true }
                     }
@@ -759,7 +766,7 @@ struct SplitSettleSheet: View {
                 }
             }
             .onAppear {
-                amountText = String(format: "%.2f", target.owedTotal)
+                amountText = String(format: "%.2f", target.amount)
                 accountId = assetAccounts.first?.id
             }
         }

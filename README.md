@@ -55,6 +55,20 @@ When a spend is partly owed back by others (e.g. shared rent), turn on **Split t
 
 When someone pays you back, tap **Mark as paid** on their Splitwise entry, enter the amount (full or partial), and pick the **checking account** the money landed in. The receivable shrinks (or clears), the account is credited, and net worth stays correct — repayments are never counted as income. Deleting the spend removes its linked receivables.
 
+### When someone else paid (you owe your share)
+
+On a spend, turn on **Someone else paid** and pick the person you owe. The amount you enter is **your share**:
+
+- **Your expense** (graphs, breakdown, totals) → counts your share, as normal
+- **No account is charged** (you didn't pay) — instead an **"I owe"** entry is created
+- **Net worth** drops by your share (a liability) until you pay them back
+
+To pay them back, tap **Pay back** on their entry, enter the amount, and pick the account the money leaves from. The "I owe" entry shrinks/clears and the account is debited.
+
+### One balance per person
+
+The Splitwise list shows a **single net row per person** — if someone both owes you and you owe them, it nets to one number (and disappears when fully settled). Tap a person to see the individual entries behind their balance.
+
 ## Tech Stack
 
 - SwiftUI + Swift Charts

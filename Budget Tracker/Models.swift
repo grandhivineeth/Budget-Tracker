@@ -93,6 +93,7 @@ struct Transaction: Identifiable, Codable {
     var type: TransactionType = .spend
     var accountId: UUID? = nil   // linked NetWorthAccount (nil = unlinked / legacy)
     var splitShares: [SplitShare] = []   // others' portions of this spend (each → an "Owes me" entry)
+    var owedTo: String? = nil    // set when someone else paid and you owe them (→ an "I owe" entry)
 
     enum TransactionType: String, Codable, CaseIterable {
         case spend  = "Spend"
@@ -101,6 +102,8 @@ struct Transaction: Identifiable, Codable {
 
     var isIncome: Bool { type == .income }
     var isSplit: Bool { !splitShares.isEmpty }
+    /// True when someone else paid this and you owe your share (no account was charged).
+    var isOwed: Bool { (owedTo?.isEmpty == false) }
 
     /// Total others owe you on this spend.
     var othersShare: Double { splitShares.reduce(0) { $0 + $1.amount } }
@@ -476,11 +479,21 @@ final class DataStore: ObservableObject {
     private func syncSplitEntries(for tx: Transaction) {
         splitEntries.removeAll { $0.transactionId == tx.id }
         guard !tx.isIncome else { return }
+        // Others owe me (I paid, split among people).
         for share in tx.splitShares where share.amount > 0 {
             splitEntries.append(SplitEntry(
                 personName: share.personName,
                 amount: share.amount,
                 direction: .owesMe,
+                transactionId: tx.id
+            ))
+        }
+        // I owe (someone else paid; my whole share is owed to them).
+        if let person = tx.owedTo, !person.isEmpty, tx.amountPaid > 0 {
+            splitEntries.append(SplitEntry(
+                personName: person,
+                amount: tx.amountPaid,
+                direction: .iOwe,
                 transactionId: tx.id
             ))
         }
@@ -518,6 +531,40 @@ final class DataStore: ObservableObject {
             var i = 0
             while i < splitEntries.count && remaining > 0.005 {
                 if splitEntries[i].personName == name && splitEntries[i].direction == .owesMe {
+                    let take = min(remaining, splitEntries[i].amount)
+                    splitEntries[i].amount -= take
+                    remaining -= take
+                    if splitEntries[i].amount <= 0.005 {
+                        splitEntries.remove(at: i)
+                        continue
+                    }
+                }
+                i += 1
+            }
+        }
+        takeSnapshot()
+    }
+
+    /// Pays back a person you owe (full or partial). Money leaves `accountId` (checking).
+    /// A full payment squares the relationship; a partial reduces your "I owe" entries
+    /// oldest-first. Net worth unchanged (asset down, liability down).
+    func payBackPerson(_ name: String, amount: Double, from accountId: UUID) {
+        let owe = -netForPerson(name)            // positive = you owe them
+        guard owe > 0.005 else { return }
+        let pay = min(max(0, amount), owe)
+        guard pay > 0 else { return }
+
+        if let ai = netWorthAccounts.firstIndex(where: { $0.id == accountId }) {
+            netWorthAccounts[ai].balance -= pay  // money leaves checking
+        }
+
+        if pay >= owe - 0.005 {
+            splitEntries.removeAll { $0.personName == name }
+        } else {
+            var remaining = pay
+            var i = 0
+            while i < splitEntries.count && remaining > 0.005 {
+                if splitEntries[i].personName == name && splitEntries[i].direction == .iOwe {
                     let take = min(remaining, splitEntries[i].amount)
                     splitEntries[i].amount -= take
                     remaining -= take
@@ -672,7 +719,7 @@ extension AppBackup {
 
 extension Transaction {
     private enum CodingKeys: String, CodingKey {
-        case id, date, title, categoryId, amountPaid, amountBack, type, accountId, splitShares
+        case id, date, title, categoryId, amountPaid, amountBack, type, accountId, splitShares, owedTo
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -685,6 +732,7 @@ extension Transaction {
         type        = try c.decodeIfPresent(TransactionType.self, forKey: .type) ?? .spend
         accountId   = try c.decodeIfPresent(UUID.self, forKey: .accountId)
         splitShares = try c.decodeIfPresent([SplitShare].self, forKey: .splitShares) ?? []
+        owedTo      = try c.decodeIfPresent(String.self, forKey: .owedTo)
     }
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
@@ -697,6 +745,7 @@ extension Transaction {
         try c.encode(type,               forKey: .type)
         try c.encodeIfPresent(accountId, forKey: .accountId)
         try c.encode(splitShares,        forKey: .splitShares)
+        try c.encodeIfPresent(owedTo,    forKey: .owedTo)
     }
 }
 

@@ -29,6 +29,12 @@ struct TransactionFormView: View {
     @State private var newPersonName         = ""
     @State private var isSaving              = false   // guards against a double-tapped Save
 
+    // Someone else paid (I owe my share)
+    @State private var paidByOther           = false
+    @State private var owedToPerson          = ""
+    @State private var showOwedNewAlert      = false
+    @State private var owedNewName           = ""
+
     var isEditing: Bool { transaction != nil }
 
     private var selectedCategory: Category? { selectedCategoryId.flatMap { store.category(for: $0) } }
@@ -98,25 +104,58 @@ struct TransactionFormView: View {
                             }
                         }
 
-                        // Account picker — required for Spend, optional for Income
-                        Button { showAccountPicker = true } label: {
-                            HStack {
-                                Text("Account").foregroundStyle(DS.text)
-                                Spacer()
-                                if let acct = selectedAccount {
-                                    HStack(spacing: 5) {
-                                        Image(systemName: acct.type.icon)
-                                            .font(.system(size: 12, weight: .semibold))
-                                            .foregroundStyle(acct.color)
-                                        Text(acct.name).foregroundStyle(DS.textSub)
-                                    }
-                                } else {
-                                    Text(txType == .spend && triedSave ? "Required" : txType == .income ? "Optional" : "Select…")
-                                        .foregroundStyle(txType == .spend && triedSave ? DS.red : DS.textHint)
+                        // Someone else paid (I owe my share) — Spend only
+                        if txType == .spend {
+                            Toggle(isOn: $paidByOther.animation()) {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "person.crop.circle.badge.minus")
+                                        .foregroundStyle(DS.blue)
+                                    Text("Someone else paid").foregroundStyle(DS.text)
                                 }
-                                Image(systemName: "chevron.right")
-                                    .font(.system(size: 11, weight: .semibold))
-                                    .foregroundStyle(DS.textHint)
+                            }
+                        }
+
+                        if txType == .spend && paidByOther {
+                            // I owe — pick the person who paid
+                            Menu {
+                                ForEach(existingPeople, id: \.self) { name in
+                                    Button(name) { owedToPerson = name }
+                                }
+                                Button { owedNewName = ""; showOwedNewAlert = true } label: {
+                                    Label("New person…", systemImage: "plus")
+                                }
+                            } label: {
+                                HStack {
+                                    Text("I owe").foregroundStyle(DS.text)
+                                    Spacer()
+                                    Text(owedToPerson.isEmpty ? (triedSave ? "Required" : "Choose person") : owedToPerson)
+                                        .foregroundStyle(owedToPerson.isEmpty ? (triedSave ? DS.red : DS.textHint) : DS.textSub)
+                                    Image(systemName: "chevron.down")
+                                        .font(.system(size: 11, weight: .semibold))
+                                        .foregroundStyle(DS.textHint)
+                                }
+                            }
+                        } else {
+                            // Account picker — required for Spend, optional for Income
+                            Button { showAccountPicker = true } label: {
+                                HStack {
+                                    Text("Account").foregroundStyle(DS.text)
+                                    Spacer()
+                                    if let acct = selectedAccount {
+                                        HStack(spacing: 5) {
+                                            Image(systemName: acct.type.icon)
+                                                .font(.system(size: 12, weight: .semibold))
+                                                .foregroundStyle(acct.color)
+                                            Text(acct.name).foregroundStyle(DS.textSub)
+                                        }
+                                    } else {
+                                        Text(txType == .spend && triedSave ? "Required" : txType == .income ? "Optional" : "Select…")
+                                            .foregroundStyle(txType == .spend && triedSave ? DS.red : DS.textHint)
+                                    }
+                                    Image(systemName: "chevron.right")
+                                        .font(.system(size: 11, weight: .semibold))
+                                        .foregroundStyle(DS.textHint)
+                                }
                             }
                         }
                     }
@@ -124,7 +163,7 @@ struct TransactionFormView: View {
 
                     Section("Amount") {
                         HStack {
-                            Text(txType == .spend ? "Amount" : "Income amount")
+                            Text(txType == .income ? "Income amount" : (paidByOther ? "My share" : "Amount"))
                             Spacer()
                             TextField("0.00", text: $amountPaid)
                                 .keyboardType(.decimalPad)
@@ -134,8 +173,8 @@ struct TransactionFormView: View {
                     }
                     .listRowBackground(DS.card)
 
-                    // Split this expense — only for Spend
-                    if txType == .spend {
+                    // Split this expense — only when I paid (Spend, not owed)
+                    if txType == .spend && !paidByOther {
                         Section("Split") {
                             Toggle(isOn: $isSplit.animation()) {
                                 HStack(spacing: 8) {
@@ -258,16 +297,29 @@ struct TransactionFormView: View {
                     pendingNewPersonRowID = nil; newPersonName = ""
                 }
             }
+            .alert("New person", isPresented: $showOwedNewAlert) {
+                TextField("Name", text: $owedNewName)
+                Button("Cancel", role: .cancel) { owedNewName = "" }
+                Button("Add") {
+                    let name = owedNewName.trimmingCharacters(in: .whitespaces)
+                    if !name.isEmpty { owedToPerson = name }
+                    owedNewName = ""
+                }
+            }
         }
         .preferredColorScheme(.dark)
     }
 
     private var isValid: Bool {
-        !title.trimmingCharacters(in: .whitespaces).isEmpty
-        && (txType == .income || selectedCategoryId != nil)
-        && (txType == .income || selectedAccountId != nil)   // account required for spend
-        && (Double(amountPaid) ?? 0) > 0
-        && splitValid
+        guard !title.trimmingCharacters(in: .whitespaces).isEmpty,
+              (Double(amountPaid) ?? 0) > 0 else { return false }
+        if txType == .income { return true }
+        // Spend
+        guard selectedCategoryId != nil else { return false }
+        if paidByOther {
+            return !owedToPerson.trimmingCharacters(in: .whitespaces).isEmpty
+        }
+        return selectedAccountId != nil && splitValid   // account required when I paid
     }
 
     private func prefill() {
@@ -281,6 +333,10 @@ struct TransactionFormView: View {
         selectedCategoryId = tx.categoryId
         selectedAccountId  = tx.accountId
         amountPaid         = String(tx.amountPaid)
+        if let person = tx.owedTo, !person.isEmpty {
+            paidByOther  = true
+            owedToPerson = person
+        }
         if !tx.splitShares.isEmpty {
             isSplit   = true
             splitRows = tx.splitShares.map {
@@ -312,13 +368,20 @@ struct TransactionFormView: View {
         let catId = selectedCategoryId ?? store.categories.first?.id ?? UUID()
         let paid = Double(amountPaid) ?? 0
         let back = 0.0   // Setup A: spends are the full amount; money coming back is logged as separate Income
-        let shares = splitSharesForSave
+
+        // "Someone else paid" → no account, an "I owe" link, and no split shares.
+        let isOwed = (txType == .spend && paidByOther)
+        let acctId: UUID?   = isOwed ? nil : selectedAccountId
+        let owed:   String? = isOwed ? owedToPerson.trimmingCharacters(in: .whitespaces) : nil
+        let shares = isOwed ? [] : splitSharesForSave
+
         if let ex = transaction {
             var u = ex
             u.type = txType; u.date = date; u.title = title
             u.amountPaid = paid; u.amountBack = back
-            u.accountId  = selectedAccountId
+            u.accountId  = acctId
             u.splitShares = shares
+            u.owedTo = owed
             store.updateTransaction(u)
         } else {
             store.addTransaction(Transaction(
@@ -326,8 +389,9 @@ struct TransactionFormView: View {
                 categoryId: catId,
                 amountPaid: paid, amountBack: back,
                 type: txType,
-                accountId: selectedAccountId,
-                splitShares: shares
+                accountId: acctId,
+                splitShares: shares,
+                owedTo: owed
             ))
         }
         dismiss()

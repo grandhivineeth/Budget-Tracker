@@ -1202,6 +1202,10 @@ struct TxDetailRow: View {
                             Text("Split · \(tx.amountPaid.formatted(.currency(code: DS.currencyCode)))")
                                 .font(.system(size: 11, weight: .medium))
                                 .foregroundStyle(DS.textSub)
+                        } else if let owed = tx.owedTo, !owed.isEmpty {
+                            Text("You owe \(owed)")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(DS.textSub)
                         } else if tx.amountBack > 0 {
                             Text("+\(tx.amountBack.formatted(.currency(code: DS.currencyCode)))")
                                 .font(.system(size: 11, weight: .medium))

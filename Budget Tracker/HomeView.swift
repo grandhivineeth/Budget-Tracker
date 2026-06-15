@@ -990,6 +990,10 @@ struct TxListRow: View {
                         Text("Split · \(transaction.amountPaid, format: .currency(code: DS.currencyCode))")
                             .font(.system(size: 11))
                             .foregroundStyle(DS.textSub)
+                    } else if let owed = transaction.owedTo, !owed.isEmpty {
+                        Text("You owe \(owed)")
+                            .font(.system(size: 11))
+                            .foregroundStyle(DS.textSub)
                     } else if transaction.amountBack > 0 {
                         Text("+\(transaction.amountBack, format: .currency(code: DS.currencyCode))")
                             .font(.system(size: 12))
@@ -1094,6 +1098,10 @@ struct TransactionRow: View {
                         .foregroundStyle(DS.red)
                     if transaction.isSplit {
                         Text("Split · \(transaction.amountPaid, format: .currency(code: DS.currencyCode))")
+                            .font(.system(size: 11))
+                            .foregroundStyle(DS.textSub)
+                    } else if let owed = transaction.owedTo, !owed.isEmpty {
+                        Text("You owe \(owed)")
                             .font(.system(size: 11))
                             .foregroundStyle(DS.textSub)
                     } else if transaction.amountBack > 0 {
