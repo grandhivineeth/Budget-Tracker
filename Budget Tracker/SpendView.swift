@@ -450,7 +450,7 @@ struct DayTransactionsSheet: View {
     }
 
     private var totalSpend: Double {
-        transactions.filter { !$0.isIncome }.reduce(0) { $0 + max(0, $1.amountPaid - $1.amountBack) }
+        transactions.filter { !$0.isIncome }.reduce(0) { $0 + $1.expenseAmount }
     }
 
     private static let fmt: DateFormatter = {
@@ -710,7 +710,7 @@ struct SpendTransactionsTab: View {
         var month: Date { id }
         let days: [(date: Date, txs: [Transaction])]
         var allTxs: [Transaction] { days.flatMap(\.txs) }
-        var netExpense: Double { allTxs.filter { !$0.isIncome }.reduce(0) { $0 + max(0, $1.amountPaid - $1.amountBack) } }
+        var netExpense: Double { allTxs.filter { !$0.isIncome }.reduce(0) { $0 + $1.expenseAmount } }
     }
 
     @State private var expandedMonths: Set<Date> = [Date().startOfMonth()]
@@ -743,7 +743,7 @@ struct SpendTransactionsTab: View {
         }
     }
 
-    private var totalExpenses: Double { filtered.filter { !$0.isIncome }.reduce(0) { $0 + max(0, $1.amountPaid - $1.amountBack) } }
+    private var totalExpenses: Double { filtered.filter { !$0.isIncome }.reduce(0) { $0 + $1.expenseAmount } }
     private var totalIncome:   Double { filtered.filter { $0.isIncome }.reduce(0) { $0 + $1.amountPaid } }
     private var dateRange: String {
         let fmt = DateFormatter()
@@ -1194,10 +1194,15 @@ struct TxDetailRow: View {
                             .font(.system(size: 11, weight: .medium))
                             .foregroundStyle(DS.green.opacity(0.7))
                     } else {
-                        Text(tx.amountPaid, format: .currency(code: DS.currencyCode))
+                        // Headline = your share
+                        Text(tx.expenseAmount, format: .currency(code: DS.currencyCode))
                             .font(.system(size: 15, weight: .semibold))
                             .foregroundStyle(DS.text)
-                        if tx.amountBack > 0 {
+                        if tx.isSplit {
+                            Text("Split · \(tx.amountPaid.formatted(.currency(code: DS.currencyCode)))")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(DS.textSub)
+                        } else if tx.amountBack > 0 {
                             Text("+\(tx.amountBack.formatted(.currency(code: DS.currencyCode)))")
                                 .font(.system(size: 11, weight: .medium))
                                 .foregroundStyle(DS.green)
@@ -1438,15 +1443,13 @@ struct SpendCategoryBreakdownCard: View {
 
     private var incomeItems: [IncomeItem] {
         let cal = Calendar.current
-        let incomeTxs: [IncomeItem] = store.transactions
+        // Only real Income-type transactions count as income.
+        // Amount-back on a spend stays a spend reduction — record incoming money
+        // as its own Income transaction when it actually arrives.
+        return store.transactions
             .filter { $0.isIncome && cal.isDate($0.date, equalTo: selectedMonth, toGranularity: .month) }
             .sorted { $0.date > $1.date }
             .map { IncomeItem(id: $0.id, title: $0.title, amount: $0.amountPaid, isCashback: false) }
-        let cashback: [IncomeItem] = store.transactions
-            .filter { !$0.isIncome && $0.amountBack > 0 && cal.isDate($0.date, equalTo: selectedMonth, toGranularity: .month) }
-            .sorted { $0.date > $1.date }
-            .map { IncomeItem(id: $0.id, title: $0.title, amount: $0.amountBack, isCashback: true) }
-        return incomeTxs + cashback
     }
     private var totalIncome: Double { incomeItems.reduce(0) { $0 + $1.amount } }
 
@@ -1719,7 +1722,7 @@ struct CategoryTransactionsSheet: View {
             .sorted { $0.date > $1.date }
     }
     private var total: Double {
-        transactions.reduce(0) { $0 + max(0, $1.amountPaid - $1.amountBack) }
+        transactions.reduce(0) { $0 + $1.expenseAmount }
     }
 
     var body: some View {

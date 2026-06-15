@@ -25,6 +25,7 @@ A personal iOS finance app built with SwiftUI for tracking spending, net worth, 
 - Link every transaction to an account — balance adjusts automatically on add, edit, or delete
 - Spend transactions require an account; income transactions optionally link to one
 - Category + account shown in each transaction row
+- **Split a spend** with one or more people — see your true share while the card keeps the full charge
 
 ### More
 - Category management (custom icon, color)
@@ -34,13 +35,25 @@ A personal iOS finance app built with SwiftUI for tracking spending, net worth, 
 
 ## Account Balance Auto-Adjustment
 
-When a transaction is saved:
-- **Spend from checking/savings/investment** → account balance decreases by net amount (paid − returned)
-- **Spend on credit card/loan** → liability balance increases (you owe more)
+A **Spend** is always the full amount you paid, and money coming back (a friend repaying you, cashback, a refund) is logged as a separate **Income** transaction when it actually arrives. This keeps every account balance matching your real statements.
+
+- **Spend from checking/savings/investment** → account balance decreases by the full amount
+- **Spend on credit card/loan** → liability balance increases by the full amount (you owe more)
 - **Income to checking/savings/investment** → account balance increases
+- **Income to credit card/loan** → liability balance decreases (debt reduced)
 - **Credit card payment (Transfer)** → bank balance decreases AND card balance decreases (debt paid off); never appears in transaction lists
 
 Editing or deleting a transaction automatically reverses the old delta and applies the new one.
+
+## Splitting a Shared Expense
+
+When a spend is partly owed back by others (e.g. shared rent), turn on **Split this expense** on the transaction and assign each person a share:
+
+- **Card / account** → charged the **full amount** (matches your real statement)
+- **Your expense** (graphs, breakdown, totals) → shows **only your share**
+- **Splitwise** → one **"Owes me"** entry per person is auto-created and linked to the transaction
+
+When someone pays you back, tap **Mark as paid** on their Splitwise entry, enter the amount (full or partial), and pick the **checking account** the money landed in. The receivable shrinks (or clears), the account is credited, and net worth stays correct — repayments are never counted as income. Deleting the spend removes its linked receivables.
 
 ## Tech Stack
 

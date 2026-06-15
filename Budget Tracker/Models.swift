@@ -57,6 +57,7 @@ struct SplitEntry: Identifiable, Codable {
     var personName: String
     var amount: Double
     var direction: Direction
+    var transactionId: UUID? = nil   // set when auto-created from a split spend
 
     enum Direction: String, Codable {
         case owesMe = "Owes me"
@@ -75,6 +76,13 @@ struct NetWorthSnapshot: Identifiable, Codable {
     var totalLiabilities: Double
 }
 
+/// One person's portion of a split spend (the part they owe you).
+struct SplitShare: Identifiable, Codable, Hashable {
+    var id: UUID = UUID()
+    var personName: String
+    var amount: Double
+}
+
 struct Transaction: Identifiable, Codable {
     var id: UUID = UUID()
     var date: Date
@@ -84,17 +92,30 @@ struct Transaction: Identifiable, Codable {
     var amountBack: Double
     var type: TransactionType = .spend
     var accountId: UUID? = nil   // linked NetWorthAccount (nil = unlinked / legacy)
+    var splitShares: [SplitShare] = []   // others' portions of this spend (each → an "Owes me" entry)
 
     enum TransactionType: String, Codable, CaseIterable {
         case spend  = "Spend"
         case income = "Income"
     }
 
-    // Spend: positive (expense). Income: treated as negative spend (credit).
-    var netAmount: Double {
-        type == .income ? -amountPaid : amountPaid - amountBack
-    }
     var isIncome: Bool { type == .income }
+    var isSplit: Bool { !splitShares.isEmpty }
+
+    /// Total others owe you on this spend.
+    var othersShare: Double { splitShares.reduce(0) { $0 + $1.amount } }
+
+    /// Your portion of a spend — what every spend report should count as your expense.
+    /// (Full amount minus any legacy amount-back and minus others' shares.)
+    var expenseAmount: Double {
+        guard !isIncome else { return 0 }
+        return max(0, amountPaid - amountBack - othersShare)
+    }
+
+    // Spend: your share (positive expense). Income: treated as negative spend (credit).
+    var netAmount: Double {
+        type == .income ? -amountPaid : expenseAmount
+    }
 }
 
 final class NavState: ObservableObject {
@@ -271,12 +292,12 @@ final class DataStore: ObservableObject {
     func netSpent(for month: Date) -> Double {
         transactions(for: month)
             .filter { !$0.isIncome }
-            .reduce(0) { $0 + max(0, $1.amountPaid - $1.amountBack) }
+            .reduce(0) { $0 + $1.expenseAmount }
     }
     func netSpent(categoryId: UUID, month: Date) -> Double {
         transactions(for: month)
             .filter { $0.categoryId == categoryId && !$0.isIncome }
-            .reduce(0) { $0 + max(0, $1.amountPaid - $1.amountBack) }
+            .reduce(0) { $0 + $1.expenseAmount }
     }
 
     func totalIncome(for month: Date) -> Double {
@@ -288,7 +309,7 @@ final class DataStore: ObservableObject {
     func totalExpense(for month: Date) -> Double {
         transactions(for: month)
             .filter { !$0.isIncome }
-            .reduce(0) { $0 + max(0, $1.amountPaid - $1.amountBack) }
+            .reduce(0) { $0 + $1.expenseAmount }
     }
 
     func allMonths() -> [Date] {
@@ -341,7 +362,7 @@ final class DataStore: ObservableObject {
             guard let date = cal.date(from: comps) else { return (day, 0) }
             let total = transactions
                 .filter { cal.isDate($0.date, inSameDayAs: date) && !$0.isIncome }
-                .reduce(0) { $0 + max(0, $1.amountPaid - $1.amountBack) }
+                .reduce(0) { $0 + $1.expenseAmount }
             return (day, total)
         }
     }
@@ -366,14 +387,15 @@ final class DataStore: ObservableObject {
     // MARK: Balance Delta Helpers
 
     /// How much a transaction changes the linked account's balance.
+    /// A spend moves the account by the FULL amount paid (the whole charge hits your
+    /// card/account) — split shares are tracked separately as Splitwise receivables.
     /// Spend from asset (checking): balance goes down. Spend on liability (credit): balance goes up.
     /// Income to asset: balance goes up. Income to liability: balance goes down (paying off debt).
     private func balanceDelta(for tx: Transaction) -> Double {
         guard let accId = tx.accountId,
               let acc = netWorthAccounts.first(where: { $0.id == accId }) else { return 0 }
-        let net = tx.amountPaid - tx.amountBack
         switch tx.type {
-        case .spend:  return acc.type.isAsset ? -net    : +net
+        case .spend:  return acc.type.isAsset ? -tx.amountPaid : +tx.amountPaid
         case .income: return acc.type.isAsset ? +tx.amountPaid : -tx.amountPaid
         }
     }
@@ -420,17 +442,65 @@ final class DataStore: ObservableObject {
     // MARK: CRUD — Transactions
     func addTransaction(_ t: Transaction) {
         transactions.append(t)
+        syncSplitEntries(for: t)
         applyBalanceDeltas(reverse: nil, apply: t)
     }
     func updateTransaction(_ t: Transaction) {
         guard let i = transactions.firstIndex(where: { $0.id == t.id }) else { return }
         let old = transactions[i]
         transactions[i] = t
+        syncSplitEntries(for: t)
         applyBalanceDeltas(reverse: old, apply: t)
     }
     func deleteTransaction(_ t: Transaction) {
         transactions.removeAll { $0.id == t.id }
+        splitEntries.removeAll { $0.transactionId == t.id }
         applyBalanceDeltas(reverse: t, apply: nil)
+    }
+
+    /// Wipes all activity — transactions, splitwise entries, transfers, and net-worth
+    /// history — but keeps accounts (with current balances) and categories intact.
+    func clearActivity() {
+        transactions      = []
+        splitEntries      = []
+        accountTransfers  = []
+        netWorthSnapshots = []
+        save()
+    }
+
+    // MARK: Split spend ↔ Splitwise linkage
+
+    /// Rebuilds the "Owes me" entries linked to a split spend. Called on add/update.
+    /// Note: editing a split regenerates its receivables — any partial settlement on
+    /// the prior entries is reset (the amounts may have changed).
+    private func syncSplitEntries(for tx: Transaction) {
+        splitEntries.removeAll { $0.transactionId == tx.id }
+        guard !tx.isIncome else { return }
+        for share in tx.splitShares where share.amount > 0 {
+            splitEntries.append(SplitEntry(
+                personName: share.personName,
+                amount: share.amount,
+                direction: .owesMe,
+                transactionId: tx.id
+            ))
+        }
+    }
+
+    /// Records a person paying back (full or partial). Deposits the settled amount into
+    /// `accountId` (a checking/asset account) and shrinks/clears the receivable.
+    /// Net worth is unchanged (asset up, receivable down) — never counted as income.
+    func settleSplitEntry(_ entry: SplitEntry, amount: Double, into accountId: UUID) {
+        guard let ei = splitEntries.firstIndex(where: { $0.id == entry.id }) else { return }
+        let settle = min(max(0, amount), splitEntries[ei].amount)
+        guard settle > 0 else { return }
+        if let ai = netWorthAccounts.firstIndex(where: { $0.id == accountId }) {
+            netWorthAccounts[ai].balance += settle   // money lands in checking
+        }
+        splitEntries[ei].amount -= settle
+        if splitEntries[ei].amount <= 0.005 {
+            splitEntries.remove(at: ei)
+        }
+        takeSnapshot()
     }
 
     // MARK: Category color palette
@@ -543,22 +613,82 @@ struct AppBackup: Codable {
     var accountTransfers: [AccountTransfer] = []
 }
 
+// Tolerant decoding so older backups (missing newer fields) still import cleanly.
+extension AppBackup {
+    private enum CodingKeys: String, CodingKey {
+        case exportDate, categories, transactions, netWorthAccounts
+        case splitEntries, netWorthSnapshots, accountTransfers
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        exportDate        = try c.decode(Date.self, forKey: .exportDate)
+        categories        = try c.decode([Category].self, forKey: .categories)
+        transactions      = try c.decode([Transaction].self, forKey: .transactions)
+        netWorthAccounts  = try c.decode([NetWorthAccount].self, forKey: .netWorthAccounts)
+        splitEntries      = try c.decode([SplitEntry].self, forKey: .splitEntries)
+        netWorthSnapshots = try c.decode([NetWorthSnapshot].self, forKey: .netWorthSnapshots)
+        accountTransfers  = try c.decodeIfPresent([AccountTransfer].self, forKey: .accountTransfers) ?? []
+    }
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(exportDate,        forKey: .exportDate)
+        try c.encode(categories,        forKey: .categories)
+        try c.encode(transactions,      forKey: .transactions)
+        try c.encode(netWorthAccounts,  forKey: .netWorthAccounts)
+        try c.encode(splitEntries,      forKey: .splitEntries)
+        try c.encode(netWorthSnapshots, forKey: .netWorthSnapshots)
+        try c.encode(accountTransfers,  forKey: .accountTransfers)
+    }
+}
+
+extension Transaction {
+    private enum CodingKeys: String, CodingKey {
+        case id, date, title, categoryId, amountPaid, amountBack, type, accountId, splitShares
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id          = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        date        = try c.decode(Date.self, forKey: .date)
+        title       = try c.decode(String.self, forKey: .title)
+        categoryId  = try c.decode(UUID.self, forKey: .categoryId)
+        amountPaid  = try c.decode(Double.self, forKey: .amountPaid)
+        amountBack  = try c.decodeIfPresent(Double.self, forKey: .amountBack) ?? 0
+        type        = try c.decodeIfPresent(TransactionType.self, forKey: .type) ?? .spend
+        accountId   = try c.decodeIfPresent(UUID.self, forKey: .accountId)
+        splitShares = try c.decodeIfPresent([SplitShare].self, forKey: .splitShares) ?? []
+    }
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id,                 forKey: .id)
+        try c.encode(date,               forKey: .date)
+        try c.encode(title,              forKey: .title)
+        try c.encode(categoryId,         forKey: .categoryId)
+        try c.encode(amountPaid,         forKey: .amountPaid)
+        try c.encode(amountBack,         forKey: .amountBack)
+        try c.encode(type,               forKey: .type)
+        try c.encodeIfPresent(accountId, forKey: .accountId)
+        try c.encode(splitShares,        forKey: .splitShares)
+    }
+}
+
 extension DataStore {
     func exportCSV() -> Data? {
         let fmt = DateFormatter()
         fmt.dateFormat = "yyyy-MM-dd"
-        var rows = ["Date,Title,Category,Account,Type,Amount Paid,Amount Back,Net Amount"]
+        var rows = ["Date,Title,Category,Account,Type,Amount Paid,Owed by Others,My Share"]
         for tx in transactions.sorted(by: { $0.date > $1.date }) {
             let cat  = category(for: tx.categoryId)?.name ?? "Unknown"
             let acct = tx.accountId.flatMap { id in netWorthAccounts.first { $0.id == id }?.name } ?? ""
             let date = fmt.string(from: tx.date)
-            let net  = tx.isIncome ? tx.amountPaid : max(0, tx.amountPaid - tx.amountBack)
+            // others owed = legacy amount-back + split shares; "My Share" is your expense
+            let owed = tx.isIncome ? 0 : (tx.amountBack + tx.othersShare)
+            let net  = tx.isIncome ? tx.amountPaid : tx.expenseAmount
             let type = tx.isIncome ? "Income" : "Spend"
             // Escape commas in text fields
             let title = tx.title.contains(",") ? "\"\(tx.title)\"" : tx.title
             let catE  = cat.contains(",")      ? "\"\(cat)\""      : cat
             let acctE = acct.contains(",")     ? "\"\(acct)\""     : acct
-            rows.append("\(date),\(title),\(catE),\(acctE),\(type),\(tx.amountPaid),\(tx.amountBack),\(net)")
+            rows.append("\(date),\(title),\(catE),\(acctE),\(type),\(tx.amountPaid),\(owed),\(net)")
         }
         return rows.joined(separator: "\n").data(using: .utf8)
     }
@@ -579,17 +709,29 @@ extension DataStore {
         return try? encoder.encode(backup)
     }
 
-    func importBackup(from data: Data) throws {
+    /// Imports a backup. When `preservingAccounts` is true, only the transactions are
+    /// restored (plus any categories they reference that you don't already have) — your
+    /// current accounts, balances, splits, transfers, and history are left untouched.
+    /// Restored transactions are unlinked to accounts, so balances are unaffected.
+    func importBackup(from data: Data, preservingAccounts: Bool = false) throws {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         let backup = try decoder.decode(AppBackup.self, from: data)
-        categories        = backup.categories
-        transactions      = backup.transactions
-        netWorthAccounts  = backup.netWorthAccounts
-        splitEntries      = backup.splitEntries
-        netWorthSnapshots = backup.netWorthSnapshots
-        accountTransfers  = backup.accountTransfers
-        save()
+        if preservingAccounts {
+            transactions = backup.transactions
+            // Add any categories the restored transactions need but that aren't present.
+            let existing = Set(categories.map { $0.id })
+            for c in backup.categories where !existing.contains(c.id) { categories.append(c) }
+            save()
+        } else {
+            categories        = backup.categories
+            transactions      = backup.transactions
+            netWorthAccounts  = backup.netWorthAccounts
+            splitEntries      = backup.splitEntries
+            netWorthSnapshots = backup.netWorthSnapshots
+            accountTransfers  = backup.accountTransfers
+            save()
+        }
     }
 }
 

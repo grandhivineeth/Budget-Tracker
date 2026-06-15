@@ -20,6 +20,7 @@ struct ManagerView: View {
     @State private var editAccount: NetWorthAccount?
     @State private var editSplit: SplitEntry?
     @State private var editTransfer: AccountTransfer?
+    @State private var settleEntry: SplitEntry?
 
     var isSheet: Bool = false
 
@@ -84,7 +85,9 @@ struct ManagerView: View {
                     case .liabilities:
                         ManagerAccountsTab(accounts: liabilities, onAdd: { showAddAccount = true }, onEdit: { editAccount = $0 })
                     case .splitwise:
-                        ManagerSplitTab(onAdd: { showAddSplit = true }, onEdit: { editSplit = $0 })
+                        ManagerSplitTab(onAdd: { showAddSplit = true },
+                                        onEdit: { editSplit = $0 },
+                                        onSettle: { settleEntry = $0 })
                     case .transfers:
                         TransfersTab(onAdd: { showAddTransfer = true }, onEdit: { editTransfer = $0 })
                     }
@@ -97,6 +100,7 @@ struct ManagerView: View {
             .sheet(item: $editAccount)  { AccountFormView(account: $0) }
             .sheet(item: $editSplit)    { SplitFormView(entry: $0) }
             .sheet(item: $editTransfer) { TransferFormView(transfer: $0) }
+            .sheet(item: $settleEntry)  { SplitSettleSheet(entry: $0) }
         }
     }
 
@@ -189,6 +193,7 @@ struct ManagerSplitTab: View {
     @EnvironmentObject var store: DataStore
     let onAdd: () -> Void
     let onEdit: (SplitEntry) -> Void
+    var onSettle: (SplitEntry) -> Void = { _ in }
 
     var owesMe: [SplitEntry] { store.splitEntries.filter { $0.direction == .owesMe } }
     var iOwe:   [SplitEntry] { store.splitEntries.filter { $0.direction == .iOwe } }
@@ -205,7 +210,8 @@ struct ManagerSplitTab: View {
                         PageTile(header: "Owes Me", chevron: false) {
                             VStack(spacing: 0) {
                                 ForEach(Array(owesMe.enumerated()), id: \.element.id) { idx, entry in
-                                    SplitRow(entry: entry, isLast: idx == owesMe.count - 1)
+                                    SplitRow(entry: entry, isLast: idx == owesMe.count - 1,
+                                             onSettle: { onSettle(entry) })
                                         .onTapGesture { onEdit(entry) }
                                 }
                             }
@@ -441,6 +447,7 @@ struct AccountRow: View {
 struct SplitRow: View {
     let entry: SplitEntry
     let isLast: Bool
+    var onSettle: (() -> Void)? = nil
 
     var body: some View {
         HStack(spacing: 14) {
@@ -462,9 +469,22 @@ struct SplitRow: View {
 
             Spacer()
 
-            Text(entry.amount, format: .currency(code: DS.currencyCode).precision(.fractionLength(0)))
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(entry.direction == .owesMe ? DS.green : DS.red)
+            VStack(alignment: .trailing, spacing: 5) {
+                Text(entry.amount, format: .currency(code: DS.currencyCode).precision(.fractionLength(0)))
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(entry.direction == .owesMe ? DS.green : DS.red)
+
+                if entry.direction == .owesMe, let onSettle {
+                    Button(action: onSettle) {
+                        Text("Mark paid")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(DS.blue)
+                            .padding(.horizontal, 9).padding(.vertical, 3)
+                            .background(Capsule().fill(DS.blue.opacity(0.12)))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
         }
         .padding(.vertical, 14)
         .padding(.horizontal, 16)
@@ -473,6 +493,120 @@ struct SplitRow: View {
                 Rectangle().fill(DS.cardBorder).frame(height: 1).padding(.leading, 68)
             }
         }
+    }
+}
+
+// MARK: - Split Settle Sheet
+
+/// "Mark as paid" — records a person paying back (full or partial). The money lands in
+/// a checking/asset account and the receivable shrinks/clears. Never counted as income.
+struct SplitSettleSheet: View {
+    @EnvironmentObject var store: DataStore
+    @Environment(\.dismiss) var dismiss
+    let entry: SplitEntry
+
+    @State private var amountText = ""
+    @State private var accountId: UUID?
+    @State private var triedSave = false
+
+    private var assetAccounts: [NetWorthAccount] { store.netWorthAccounts.filter { $0.type.isAsset } }
+    private var amount: Double { Double(amountText) ?? 0 }
+    private var isValid: Bool {
+        amount > 0 && amount <= entry.amount + 0.005 && accountId != nil
+    }
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                DS.bg.ignoresSafeArea()
+                Form {
+                    Section {
+                        HStack {
+                            Text("\(entry.personName) owes")
+                                .foregroundStyle(DS.text)
+                            Spacer()
+                            Text(entry.amount, format: .currency(code: DS.currencyCode))
+                                .foregroundStyle(DS.green)
+                        }
+                    }
+                    .listRowBackground(DS.card)
+
+                    Section("Amount received") {
+                        HStack {
+                            Text("Amount")
+                            Spacer()
+                            TextField("0.00", text: $amountText)
+                                .keyboardType(.decimalPad)
+                                .multilineTextAlignment(.trailing)
+                                .foregroundStyle(DS.green)
+                        }
+                        Button("Use full amount") {
+                            amountText = String(format: "%.2f", entry.amount)
+                        }
+                        .font(.system(size: 13))
+                        .foregroundStyle(DS.blue)
+                    }
+                    .listRowBackground(DS.card)
+
+                    Section("Deposit into") {
+                        if assetAccounts.isEmpty {
+                            Text("Add a checking / savings account first.")
+                                .foregroundStyle(DS.textSub).font(.system(size: 13))
+                        } else {
+                            ForEach(assetAccounts) { acct in
+                                Button { accountId = acct.id } label: {
+                                    HStack {
+                                        Image(systemName: acct.type.icon)
+                                            .foregroundStyle(acct.color).frame(width: 28)
+                                        Text(acct.name).foregroundStyle(DS.text)
+                                        Spacer()
+                                        Text(acct.balance, format: .currency(code: DS.currencyCode))
+                                            .foregroundStyle(DS.textSub).font(.system(size: 13))
+                                        if accountId == acct.id {
+                                            Image(systemName: "checkmark")
+                                                .font(.system(size: 13, weight: .semibold))
+                                                .foregroundStyle(DS.blue)
+                                        }
+                                    }
+                                }
+                                .listRowBackground(DS.card)
+                            }
+                        }
+                    }
+
+                    if triedSave && !isValid {
+                        Section {
+                            Text("Enter an amount up to the owed total and pick an account.")
+                                .font(.system(size: 12)).foregroundStyle(DS.red)
+                        }
+                        .listRowBackground(DS.card)
+                    }
+                }
+                .scrollContentBackground(.hidden)
+            }
+            .navigationTitle("Mark as Paid")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(DS.bg, for: .navigationBar)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }.foregroundStyle(DS.blue)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Settle") {
+                        if isValid, let acc = accountId {
+                            store.settleSplitEntry(entry, amount: amount, into: acc)
+                            dismiss()
+                        } else { triedSave = true }
+                    }
+                    .fontWeight(.semibold).foregroundStyle(DS.blue)
+                }
+            }
+            .onAppear {
+                amountText = String(format: "%.2f", entry.amount)
+                accountId = assetAccounts.first?.id
+            }
+        }
+        .preferredColorScheme(.dark)
     }
 }
 

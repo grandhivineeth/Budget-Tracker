@@ -20,6 +20,9 @@ struct MoreView: View {
     @State private var showImportAlert   = false
     @State private var importError: String?
     @State private var showImportSuccess = false
+    @State private var showClearConfirm  = false
+    @State private var pendingImportData: Data? = nil
+    @State private var showImportChoice  = false
 
 
     // MARK: - Body
@@ -174,7 +177,14 @@ struct MoreView: View {
                                 dataActionRow(icon: "square.and.arrow.down.fill", color: DS.purple,
                                               label: "Import Backup",
                                               sublabel: "Restore from a .json backup file",
-                                              isLast: true) { showFilePicker = true }
+                                              isLast: false) { showFilePicker = true }
+
+                                Divider().background(DS.cardBorder).padding(.leading, 70)
+
+                                dataActionRow(icon: "trash.fill", color: DS.red,
+                                              label: "Clear All Data",
+                                              sublabel: "Erase transactions, splits & history · keep accounts",
+                                              isLast: true) { showClearConfirm = true }
                             }
 
                             // ── iCloud Backup ─────────────────────────────
@@ -209,6 +219,23 @@ struct MoreView: View {
             .alert("Import failed", isPresented: $showImportAlert) {
                 Button("OK", role: .cancel) {}
             } message: { Text(importError ?? "The file could not be read.") }
+            .confirmationDialog("Import Backup", isPresented: $showImportChoice, titleVisibility: .visible) {
+                Button("Keep my accounts — restore transactions only") {
+                    runImport(preservingAccounts: true)
+                }
+                Button("Replace everything", role: .destructive) {
+                    runImport(preservingAccounts: false)
+                }
+                Button("Cancel", role: .cancel) { pendingImportData = nil }
+            } message: {
+                Text("Keep your current accounts & balances and just bring back the transactions, or replace all data with the backup?")
+            }
+            .alert("Clear All Data?", isPresented: $showClearConfirm) {
+                Button("Cancel", role: .cancel) {}
+                Button("Clear Everything", role: .destructive) { store.clearActivity() }
+            } message: {
+                Text("Erases all transactions, splitwise entries, transfers, and net-worth history. Your accounts (with current balances) and categories are kept. This can't be undone.")
+            }
             .alert("Backup restored ✓", isPresented: $showImportSuccess) {
                 Button("OK", role: .cancel) {}
             } message: { Text("Your categories and transactions have been restored.") }
@@ -253,13 +280,23 @@ struct MoreView: View {
             let ok = url.startAccessingSecurityScopedResource()
             defer { if ok { url.stopAccessingSecurityScopedResource() } }
             do {
-                let data = try Data(contentsOf: url)
-                try store.importBackup(from: data)
-                showImportSuccess = true
+                pendingImportData = try Data(contentsOf: url)
+                showImportChoice = true   // ask: replace everything vs keep accounts
             } catch {
                 importError = error.localizedDescription; showImportAlert = true
             }
         }
+    }
+
+    private func runImport(preservingAccounts: Bool) {
+        guard let data = pendingImportData else { return }
+        do {
+            try store.importBackup(from: data, preservingAccounts: preservingAccounts)
+            showImportSuccess = true
+        } catch {
+            importError = error.localizedDescription; showImportAlert = true
+        }
+        pendingImportData = nil
     }
 
     // MARK: - Helpers

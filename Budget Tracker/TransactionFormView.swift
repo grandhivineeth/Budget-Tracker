@@ -1,5 +1,12 @@
 import SwiftUI
 
+/// Editable row in the "Split this expense" section (one person + their share).
+private struct SplitRowInput: Identifiable {
+    let id = UUID()
+    var personName: String = ""
+    var amountText: String = ""
+}
+
 struct TransactionFormView: View {
     @EnvironmentObject var store: DataStore
     @Environment(\.dismiss) var dismiss
@@ -11,16 +18,40 @@ struct TransactionFormView: View {
     @State private var selectedCategoryId:   UUID?
     @State private var selectedAccountId:    UUID?
     @State private var amountPaid            = ""
-    @State private var amountBack            = ""
     @State private var showCategoryPicker    = false
     @State private var showAccountPicker     = false
     @State private var triedSave             = false   // shows "Required" hints on failed save attempt
+
+    // Split this expense
+    @State private var isSplit               = false
+    @State private var splitRows: [SplitRowInput] = []
+    @State private var pendingNewPersonRowID: UUID? = nil
+    @State private var newPersonName         = ""
+    @State private var isSaving              = false   // guards against a double-tapped Save
 
     var isEditing: Bool { transaction != nil }
 
     private var selectedCategory: Category? { selectedCategoryId.flatMap { store.category(for: $0) } }
     private var selectedAccount:  NetWorthAccount? {
         selectedAccountId.flatMap { id in store.netWorthAccounts.first { $0.id == id } }
+    }
+
+    private var existingPeople: [String] {
+        Array(Set(store.splitEntries.map { $0.personName })).sorted()
+    }
+    private var totalAmount: Double { Double(amountPaid) ?? 0 }
+    private var assignedToOthers: Double {
+        splitRows.reduce(0) { $0 + (Double($1.amountText) ?? 0) }
+    }
+    private var myShare: Double { totalAmount - assignedToOthers }
+    private var splitValid: Bool {
+        guard isSplit else { return true }
+        return assignedToOthers > 0
+            && assignedToOthers <= totalAmount + 0.005
+            && splitRows.allSatisfy {
+                !$0.personName.trimmingCharacters(in: .whitespaces).isEmpty
+                && (Double($0.amountText) ?? 0) > 0
+            }
     }
 
     var body: some View {
@@ -92,35 +123,88 @@ struct TransactionFormView: View {
                     .listRowBackground(DS.card)
 
                     Section("Amount") {
-                        if txType == .spend {
-                            HStack {
-                                Text("Amount paid")
-                                Spacer()
-                                TextField("0.00", text: $amountPaid)
-                                    .keyboardType(.decimalPad)
-                                    .multilineTextAlignment(.trailing)
-                                    .foregroundStyle(DS.red)
-                            }
-                            HStack {
-                                Text("Amount back")
-                                Spacer()
-                                TextField("0.00", text: $amountBack)
-                                    .keyboardType(.decimalPad)
-                                    .multilineTextAlignment(.trailing)
-                                    .foregroundStyle(DS.green)
-                            }
-                        } else {
-                            HStack {
-                                Text("Income amount")
-                                Spacer()
-                                TextField("0.00", text: $amountPaid)
-                                    .keyboardType(.decimalPad)
-                                    .multilineTextAlignment(.trailing)
-                                    .foregroundStyle(DS.green)
-                            }
+                        HStack {
+                            Text(txType == .spend ? "Amount" : "Income amount")
+                            Spacer()
+                            TextField("0.00", text: $amountPaid)
+                                .keyboardType(.decimalPad)
+                                .multilineTextAlignment(.trailing)
+                                .foregroundStyle(txType == .spend ? DS.red : DS.green)
                         }
                     }
                     .listRowBackground(DS.card)
+
+                    // Split this expense — only for Spend
+                    if txType == .spend {
+                        Section("Split") {
+                            Toggle(isOn: $isSplit.animation()) {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "person.2.fill").foregroundStyle(DS.blue)
+                                    Text("Split this expense").foregroundStyle(DS.text)
+                                }
+                            }
+
+                            if isSplit {
+                                ForEach($splitRows) { $row in
+                                    HStack(spacing: 10) {
+                                        Menu {
+                                            ForEach(existingPeople, id: \.self) { name in
+                                                Button(name) { row.personName = name }
+                                            }
+                                            Button {
+                                                newPersonName = ""
+                                                pendingNewPersonRowID = row.id
+                                            } label: { Label("New person…", systemImage: "plus") }
+                                        } label: {
+                                            HStack(spacing: 4) {
+                                                Text(row.personName.isEmpty ? "Choose person" : row.personName)
+                                                    .foregroundStyle(row.personName.isEmpty ? DS.textHint : DS.text)
+                                                Image(systemName: "chevron.down")
+                                                    .font(.system(size: 10)).foregroundStyle(DS.textHint)
+                                            }
+                                        }
+                                        Spacer()
+                                        TextField("0.00", text: $row.amountText)
+                                            .keyboardType(.decimalPad)
+                                            .multilineTextAlignment(.trailing)
+                                            .frame(width: 80)
+                                            .foregroundStyle(DS.blue)
+                                        Button {
+                                            splitRows.removeAll { $0.id == row.id }
+                                        } label: {
+                                            Image(systemName: "minus.circle.fill")
+                                                .foregroundStyle(DS.red.opacity(0.85))
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
+                                }
+
+                                Button {
+                                    splitRows.append(SplitRowInput())
+                                } label: {
+                                    Label("Add person", systemImage: "plus")
+                                        .font(.system(size: 14, weight: .medium))
+                                        .foregroundStyle(DS.blue)
+                                }
+
+                                HStack {
+                                    Text("Your share").foregroundStyle(DS.text)
+                                    Spacer()
+                                    Text(myShare, format: .currency(code: DS.currencyCode))
+                                        .fontWeight(.semibold)
+                                        .foregroundStyle(myShare < -0.005 ? DS.red : DS.green)
+                                }
+                                if assignedToOthers > totalAmount + 0.005 {
+                                    Text("Others' shares exceed the amount.")
+                                        .font(.system(size: 12)).foregroundStyle(DS.red)
+                                } else if triedSave && assignedToOthers <= 0 {
+                                    Text("Add at least one person's share.")
+                                        .font(.system(size: 12)).foregroundStyle(DS.red)
+                                }
+                            }
+                        }
+                        .listRowBackground(DS.card)
+                    }
 
                     if isEditing {
                         Section {
@@ -150,11 +234,29 @@ struct TransactionFormView: View {
                 }
             }
             .onAppear { prefill() }
+            .onChange(of: isSplit) { _, on in
+                if on && splitRows.isEmpty { splitRows = [SplitRowInput()] }
+            }
             .sheet(isPresented: $showCategoryPicker) {
                 CategoryPickerSheet(selection: $selectedCategoryId)
             }
             .sheet(isPresented: $showAccountPicker) {
                 AccountPickerSheet(selection: $selectedAccountId, required: txType == .spend)
+            }
+            .alert("New person", isPresented: Binding(
+                get: { pendingNewPersonRowID != nil },
+                set: { if !$0 { pendingNewPersonRowID = nil } }
+            )) {
+                TextField("Name", text: $newPersonName)
+                Button("Cancel", role: .cancel) { pendingNewPersonRowID = nil; newPersonName = "" }
+                Button("Add") {
+                    let name = newPersonName.trimmingCharacters(in: .whitespaces)
+                    if let id = pendingNewPersonRowID,
+                       let idx = splitRows.firstIndex(where: { $0.id == id }), !name.isEmpty {
+                        splitRows[idx].personName = name
+                    }
+                    pendingNewPersonRowID = nil; newPersonName = ""
+                }
             }
         }
         .preferredColorScheme(.dark)
@@ -165,6 +267,7 @@ struct TransactionFormView: View {
         && (txType == .income || selectedCategoryId != nil)
         && (txType == .income || selectedAccountId != nil)   // account required for spend
         && (Double(amountPaid) ?? 0) > 0
+        && splitValid
     }
 
     private func prefill() {
@@ -178,18 +281,44 @@ struct TransactionFormView: View {
         selectedCategoryId = tx.categoryId
         selectedAccountId  = tx.accountId
         amountPaid         = String(tx.amountPaid)
-        amountBack         = tx.amountBack > 0 ? String(tx.amountBack) : ""
+        if !tx.splitShares.isEmpty {
+            isSplit   = true
+            splitRows = tx.splitShares.map {
+                SplitRowInput(personName: $0.personName, amountText: String($0.amount))
+            }
+        }
+    }
+
+    /// Builds the SplitShare list from the editable rows (spend + split only).
+    /// Rows for the same person are merged into a single share so one person never
+    /// produces multiple Splitwise entries on the same transaction.
+    private var splitSharesForSave: [SplitShare] {
+        guard txType == .spend, isSplit else { return [] }
+        var totals: [String: Double] = [:]
+        var order: [String] = []
+        for r in splitRows {
+            let amt  = Double(r.amountText) ?? 0
+            let name = r.personName.trimmingCharacters(in: .whitespaces)
+            guard amt > 0, !name.isEmpty else { continue }
+            if totals[name] == nil { order.append(name) }
+            totals[name, default: 0] += amt
+        }
+        return order.map { SplitShare(personName: $0, amount: totals[$0] ?? 0) }
     }
 
     private func saveAndDismiss() {
+        guard !isSaving else { return }   // ignore a second tap while dismissing
+        isSaving = true
         let catId = selectedCategoryId ?? store.categories.first?.id ?? UUID()
         let paid = Double(amountPaid) ?? 0
-        let back = txType == .income ? 0.0 : (Double(amountBack) ?? 0)
+        let back = 0.0   // Setup A: spends are the full amount; money coming back is logged as separate Income
+        let shares = splitSharesForSave
         if let ex = transaction {
             var u = ex
             u.type = txType; u.date = date; u.title = title
             u.amountPaid = paid; u.amountBack = back
             u.accountId  = selectedAccountId
+            u.splitShares = shares
             store.updateTransaction(u)
         } else {
             store.addTransaction(Transaction(
@@ -197,7 +326,8 @@ struct TransactionFormView: View {
                 categoryId: catId,
                 amountPaid: paid, amountBack: back,
                 type: txType,
-                accountId: selectedAccountId
+                accountId: selectedAccountId,
+                splitShares: shares
             ))
         }
         dismiss()

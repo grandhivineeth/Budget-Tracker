@@ -637,7 +637,7 @@ struct SevenDayMiniStrip: View {
             let dayNum  = String(cal.component(.day, from: date))
             let total   = store.transactions
                 .filter { cal.isDate($0.date, inSameDayAs: date) && !$0.isIncome }
-                .reduce(0) { $0 + max(0, $1.amountPaid - $1.amountBack) }
+                .reduce(0) { $0 + $1.expenseAmount }
             return DayData(date: date, weekdayLabel: wdShort[weekday], dayNumber: dayNum, amount: total)
         }
     }
@@ -702,7 +702,7 @@ struct SevenDayCalendarGrid: View {
             let wd     = cal.component(.weekday, from: date) - 1
             let total  = store.transactions
                 .filter { cal.isDate($0.date, inSameDayAs: date) && !$0.isIncome }
-                .reduce(0) { $0 + max(0, $1.amountPaid - $1.amountBack) }
+                .reduce(0) { $0 + $1.expenseAmount }
             return DayData(date: date, dayNum: dayNum, weekday: weekdayLabels[wd], amount: max(0, total))
         }
     }
@@ -982,10 +982,15 @@ struct TxListRow: View {
                         .font(.system(size: 11))
                         .foregroundStyle(DS.green.opacity(0.7))
                 } else {
-                    Text("-\(transaction.amountPaid, format: .currency(code: DS.currencyCode))")
+                    // Headline = your share (what it actually cost you)
+                    Text("-\(transaction.expenseAmount, format: .currency(code: DS.currencyCode))")
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(DS.red)
-                    if transaction.amountBack > 0 {
+                    if transaction.isSplit {
+                        Text("Split · \(transaction.amountPaid, format: .currency(code: DS.currencyCode))")
+                            .font(.system(size: 11))
+                            .foregroundStyle(DS.textSub)
+                    } else if transaction.amountBack > 0 {
                         Text("+\(transaction.amountBack, format: .currency(code: DS.currencyCode))")
                             .font(.system(size: 12))
                             .foregroundStyle(DS.green)
@@ -1083,10 +1088,15 @@ struct TransactionRow: View {
                         .font(.system(size: 11))
                         .foregroundStyle(DS.green.opacity(0.7))
                 } else {
-                    Text("-\(transaction.amountPaid, format: .currency(code: DS.currencyCode))")
+                    // Headline = your share (what it actually cost you)
+                    Text("-\(transaction.expenseAmount, format: .currency(code: DS.currencyCode))")
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(DS.red)
-                    if transaction.amountBack > 0 {
+                    if transaction.isSplit {
+                        Text("Split · \(transaction.amountPaid, format: .currency(code: DS.currencyCode))")
+                            .font(.system(size: 11))
+                            .foregroundStyle(DS.textSub)
+                    } else if transaction.amountBack > 0 {
                         Text("+\(transaction.amountBack, format: .currency(code: DS.currencyCode))")
                             .font(.system(size: 12))
                             .foregroundStyle(DS.green)
