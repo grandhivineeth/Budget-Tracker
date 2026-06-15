@@ -23,7 +23,7 @@ struct CategoryListView: View {
                         .padding(.horizontal, 20).padding(.top, 16)
                     }
                     Spacer(minLength: 40)
-                }
+                } 
             }
             .navigationTitle("Categories")
             .navigationBarTitleDisplayMode(.large)

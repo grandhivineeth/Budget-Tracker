@@ -20,7 +20,8 @@ struct ManagerView: View {
     @State private var editAccount: NetWorthAccount?
     @State private var editSplit: SplitEntry?
     @State private var editTransfer: AccountTransfer?
-    @State private var settleEntry: SplitEntry?
+    @State private var settleTarget: SettleTarget?
+    @State private var breakdownRef: PersonRef?
 
     var isSheet: Bool = false
 
@@ -86,8 +87,8 @@ struct ManagerView: View {
                         ManagerAccountsTab(accounts: liabilities, onAdd: { showAddAccount = true }, onEdit: { editAccount = $0 })
                     case .splitwise:
                         ManagerSplitTab(onAdd: { showAddSplit = true },
-                                        onEdit: { editSplit = $0 },
-                                        onSettle: { settleEntry = $0 })
+                                        onSettle: { settleTarget = $0 },
+                                        onTapGroup: { breakdownRef = $0 })
                     case .transfers:
                         TransfersTab(onAdd: { showAddTransfer = true }, onEdit: { editTransfer = $0 })
                     }
@@ -100,7 +101,8 @@ struct ManagerView: View {
             .sheet(item: $editAccount)  { AccountFormView(account: $0) }
             .sheet(item: $editSplit)    { SplitFormView(entry: $0) }
             .sheet(item: $editTransfer) { TransferFormView(transfer: $0) }
-            .sheet(item: $settleEntry)  { SplitSettleSheet(entry: $0) }
+            .sheet(item: $settleTarget) { SplitSettleSheet(target: $0) }
+            .sheet(item: $breakdownRef) { PersonEntriesSheet(personName: $0.personName, direction: $0.direction) }
         }
     }
 
@@ -189,30 +191,74 @@ struct ManagerAccountsTab: View {
 
 // MARK: - Splitwise Tab
 
+/// One person's combined balance (across all their linked/standalone entries).
+struct PersonGroup: Identifiable {
+    let personName: String
+    let direction: SplitEntry.Direction
+    let total: Double
+    let count: Int
+    var id: String { "\(direction.rawValue)|\(personName)" }
+
+    /// Collapses entries into one **net** group per person (first-seen order):
+    /// positive net → "Owes me", negative net → "I owe". People who net to zero are
+    /// dropped (fully settled). The displayed total is the absolute net.
+    static func grouped(_ entries: [SplitEntry]) -> [PersonGroup] {
+        var order: [String] = []
+        var net: [String: Double] = [:]
+        var counts: [String: Int] = [:]
+        for e in entries {
+            if net[e.personName] == nil { order.append(e.personName) }
+            net[e.personName, default: 0] += (e.direction == .owesMe ? e.amount : -e.amount)
+            counts[e.personName, default: 0] += 1
+        }
+        return order.compactMap { name in
+            let n = net[name] ?? 0
+            guard abs(n) > 0.005 else { return nil }   // netted to zero — hide
+            return PersonGroup(personName: name,
+                               direction: n > 0 ? .owesMe : .iOwe,
+                               total: abs(n),
+                               count: counts[name] ?? 0)
+        }
+    }
+}
+
+/// Lightweight identifiable wrapper for sheet presentation.
+struct SettleTarget: Identifiable {
+    let id = UUID()
+    let personName: String
+    let owedTotal: Double
+}
+struct PersonRef: Identifiable {
+    let id = UUID()
+    let personName: String
+    let direction: SplitEntry.Direction
+}
+
 struct ManagerSplitTab: View {
     @EnvironmentObject var store: DataStore
     let onAdd: () -> Void
-    let onEdit: (SplitEntry) -> Void
-    var onSettle: (SplitEntry) -> Void = { _ in }
+    var onSettle: (SettleTarget) -> Void = { _ in }
+    var onTapGroup: (PersonRef) -> Void = { _ in }
 
-    var owesMe: [SplitEntry] { store.splitEntries.filter { $0.direction == .owesMe } }
-    var iOwe:   [SplitEntry] { store.splitEntries.filter { $0.direction == .iOwe } }
+    private var allGroups: [PersonGroup] { PersonGroup.grouped(store.splitEntries) }
+    private var owesMeGroups: [PersonGroup] { allGroups.filter { $0.direction == .owesMe } }
+    private var iOweGroups:   [PersonGroup] { allGroups.filter { $0.direction == .iOwe } }
 
     var body: some View {
         ScrollView(showsIndicators: false) {
             VStack(spacing: 14) {
-                if store.splitEntries.isEmpty {
+                if owesMeGroups.isEmpty && iOweGroups.isEmpty {
                     EmptyStateView(message: "No split entries yet — tap + to add")
                         .padding(.top, 60)
                 } else {
                     // Owes me
-                    if !owesMe.isEmpty {
+                    if !owesMeGroups.isEmpty {
                         PageTile(header: "Owes Me", chevron: false) {
                             VStack(spacing: 0) {
-                                ForEach(Array(owesMe.enumerated()), id: \.element.id) { idx, entry in
-                                    SplitRow(entry: entry, isLast: idx == owesMe.count - 1,
-                                             onSettle: { onSettle(entry) })
-                                        .onTapGesture { onEdit(entry) }
+                                ForEach(Array(owesMeGroups.enumerated()), id: \.element.id) { idx, g in
+                                    PersonGroupRow(group: g, isLast: idx == owesMeGroups.count - 1,
+                                                   onSettle: { onSettle(SettleTarget(personName: g.personName, owedTotal: g.total)) })
+                                        .onTapGesture { onTapGroup(PersonRef(personName: g.personName, direction: .owesMe)) }
                                 }
                             }
                             .padding(.bottom, 8)
@@ -220,12 +266,12 @@ struct ManagerSplitTab: View {
                     }
 
                     // I owe
-                    if !iOwe.isEmpty {
+                    if !iOweGroups.isEmpty {
                         PageTile(header: "I Owe", chevron: false) {
                             VStack(spacing: 0) {
-                                ForEach(Array(iOwe.enumerated()), id: \.element.id) { idx, entry in
-                                    SplitRow(entry: entry, isLast: idx == iOwe.count - 1)
-                                        .onTapGesture { onEdit(entry) }
+                                ForEach(Array(iOweGroups.enumerated()), id: \.element.id) { idx, g in
+                                    PersonGroupRow(group: g, isLast: idx == iOweGroups.count - 1)
+                                        .onTapGesture { onTapGroup(PersonRef(personName: g.personName, direction: .iOwe)) }
                                 }
                             }
                             .padding(.bottom, 8)
@@ -379,11 +425,10 @@ struct SplitwiseTile: View {
                     .padding(.horizontal, 18)
                     .padding(.bottom, 18)
             } else {
+                let groups = PersonGroup.grouped(store.splitEntries)
                 VStack(spacing: 0) {
-                    ForEach(Array(store.splitEntries.enumerated()), id: \.element.id) { idx, entry in
-                        SplitRow(entry: entry, isLast: idx == store.splitEntries.count - 1)
-                            .contentShape(Rectangle())
-                            .onTapGesture { onEdit(entry) }
+                    ForEach(Array(groups.enumerated()), id: \.element.id) { idx, g in
+                        PersonGroupRow(group: g, isLast: idx == groups.count - 1)
                     }
                 }
 
@@ -496,6 +541,118 @@ struct SplitRow: View {
     }
 }
 
+// MARK: - Person Group Row (grouped Splitwise list)
+
+struct PersonGroupRow: View {
+    let group: PersonGroup
+    let isLast: Bool
+    var onSettle: (() -> Void)? = nil
+
+    private var tint: Color { group.direction == .owesMe ? DS.green : DS.red }
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Text(String(group.personName.prefix(1)).uppercased())
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(tint)
+                .frame(width: 38, height: 38)
+                .background(RoundedRectangle(cornerRadius: 10).fill(tint.opacity(0.15)))
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(group.personName)
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(DS.text)
+                Text(group.count > 1 ? "\(group.direction.rawValue) · \(group.count) items"
+                                     : group.direction.rawValue)
+                    .font(.system(size: 12))
+                    .foregroundStyle(DS.textSub)
+            }
+
+            Spacer()
+
+            VStack(alignment: .trailing, spacing: 5) {
+                Text(group.total, format: .currency(code: DS.currencyCode).precision(.fractionLength(0)))
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(tint)
+
+                if group.direction == .owesMe, let onSettle {
+                    Button(action: onSettle) {
+                        Text("Mark paid")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(DS.blue)
+                            .padding(.horizontal, 9).padding(.vertical, 3)
+                            .background(Capsule().fill(DS.blue.opacity(0.12)))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(.vertical, 14)
+        .padding(.horizontal, 16)
+        .contentShape(Rectangle())
+        .overlay(alignment: .bottom) {
+            if !isLast {
+                Rectangle().fill(DS.cardBorder).frame(height: 1).padding(.leading, 68)
+            }
+        }
+    }
+}
+
+// MARK: - Person Entries Breakdown
+
+/// Tapping a grouped person opens this — the individual entries behind their total,
+/// each tappable to edit or delete via the existing split form.
+struct PersonEntriesSheet: View {
+    @EnvironmentObject var store: DataStore
+    @Environment(\.dismiss) var dismiss
+    let personName: String
+    let direction: SplitEntry.Direction   // section it was opened from (kept for context)
+
+    @State private var editEntry: SplitEntry?
+
+    // All of this person's entries — both directions — since the list nets per person.
+    private var entries: [SplitEntry] {
+        store.splitEntries.filter { $0.personName == personName }
+    }
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                DS.bg.ignoresSafeArea()
+                ScrollView(showsIndicators: false) {
+                    VStack(spacing: 14) {
+                        if entries.isEmpty {
+                            EmptyStateView(message: "Nothing left here").padding(.top, 60)
+                        } else {
+                            PageTile(header: "\(entries.count) entr\(entries.count == 1 ? "y" : "ies")", chevron: false) {
+                                VStack(spacing: 0) {
+                                    ForEach(Array(entries.enumerated()), id: \.element.id) { idx, e in
+                                        SplitRow(entry: e, isLast: idx == entries.count - 1)
+                                            .onTapGesture { editEntry = e }
+                                    }
+                                }
+                                .padding(.bottom, 8)
+                            }
+                        }
+                        Spacer(minLength: 40)
+                    }
+                    .padding(.horizontal, 16).padding(.top, 16)
+                }
+            }
+            .navigationTitle(personName)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(DS.bg, for: .navigationBar)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }.foregroundStyle(DS.blue)
+                }
+            }
+            .sheet(item: $editEntry) { SplitFormView(entry: $0) }
+        }
+        .preferredColorScheme(.dark)
+    }
+}
+
 // MARK: - Split Settle Sheet
 
 /// "Mark as paid" — records a person paying back (full or partial). The money lands in
@@ -503,7 +660,7 @@ struct SplitRow: View {
 struct SplitSettleSheet: View {
     @EnvironmentObject var store: DataStore
     @Environment(\.dismiss) var dismiss
-    let entry: SplitEntry
+    let target: SettleTarget
 
     @State private var amountText = ""
     @State private var accountId: UUID?
@@ -512,7 +669,7 @@ struct SplitSettleSheet: View {
     private var assetAccounts: [NetWorthAccount] { store.netWorthAccounts.filter { $0.type.isAsset } }
     private var amount: Double { Double(amountText) ?? 0 }
     private var isValid: Bool {
-        amount > 0 && amount <= entry.amount + 0.005 && accountId != nil
+        amount > 0 && amount <= target.owedTotal + 0.005 && accountId != nil
     }
 
     var body: some View {
@@ -522,10 +679,10 @@ struct SplitSettleSheet: View {
                 Form {
                     Section {
                         HStack {
-                            Text("\(entry.personName) owes")
+                            Text("\(target.personName) owes")
                                 .foregroundStyle(DS.text)
                             Spacer()
-                            Text(entry.amount, format: .currency(code: DS.currencyCode))
+                            Text(target.owedTotal, format: .currency(code: DS.currencyCode))
                                 .foregroundStyle(DS.green)
                         }
                     }
@@ -541,7 +698,7 @@ struct SplitSettleSheet: View {
                                 .foregroundStyle(DS.green)
                         }
                         Button("Use full amount") {
-                            amountText = String(format: "%.2f", entry.amount)
+                            amountText = String(format: "%.2f", target.owedTotal)
                         }
                         .font(.system(size: 13))
                         .foregroundStyle(DS.blue)
@@ -594,7 +751,7 @@ struct SplitSettleSheet: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Settle") {
                         if isValid, let acc = accountId {
-                            store.settleSplitEntry(entry, amount: amount, into: acc)
+                            store.settlePerson(target.personName, amount: amount, into: acc)
                             dismiss()
                         } else { triedSave = true }
                     }
@@ -602,7 +759,7 @@ struct SplitSettleSheet: View {
                 }
             }
             .onAppear {
-                amountText = String(format: "%.2f", entry.amount)
+                amountText = String(format: "%.2f", target.owedTotal)
                 accountId = assetAccounts.first?.id
             }
         }

@@ -486,19 +486,48 @@ final class DataStore: ObservableObject {
         }
     }
 
-    /// Records a person paying back (full or partial). Deposits the settled amount into
-    /// `accountId` (a checking/asset account) and shrinks/clears the receivable.
-    /// Net worth is unchanged (asset up, receivable down) — never counted as income.
-    func settleSplitEntry(_ entry: SplitEntry, amount: Double, into accountId: UUID) {
-        guard let ei = splitEntries.firstIndex(where: { $0.id == entry.id }) else { return }
-        let settle = min(max(0, amount), splitEntries[ei].amount)
-        guard settle > 0 else { return }
+    /// A person's net balance: positive = they owe you, negative = you owe them.
+    /// (Sum of their "Owes me" entries minus their "I owe" entries.)
+    func netForPerson(_ name: String) -> Double {
+        splitEntries
+            .filter { $0.personName == name }
+            .reduce(0) { $0 + ($1.direction == .owesMe ? $1.amount : -$1.amount) }
+    }
+
+    /// Records a person paying back their net balance (full or partial). Deposits the
+    /// paid amount into `accountId` (a checking/asset account). A full settle squares the
+    /// whole relationship — every entry for that person (both directions) is cleared.
+    /// A partial payment reduces their "Owes me" entries oldest-first. Net worth is
+    /// unchanged (asset up, receivable down) — never counted as income.
+    func settlePerson(_ name: String, amount: Double, into accountId: UUID) {
+        let net = netForPerson(name)
+        guard net > 0.005 else { return }            // only a net-positive person can pay you
+        let pay = min(max(0, amount), net)
+        guard pay > 0 else { return }
+
         if let ai = netWorthAccounts.firstIndex(where: { $0.id == accountId }) {
-            netWorthAccounts[ai].balance += settle   // money lands in checking
+            netWorthAccounts[ai].balance += pay      // money lands in checking
         }
-        splitEntries[ei].amount -= settle
-        if splitEntries[ei].amount <= 0.005 {
-            splitEntries.remove(at: ei)
+
+        if pay >= net - 0.005 {
+            // Full settle — clear the entire relationship (both directions).
+            splitEntries.removeAll { $0.personName == name }
+        } else {
+            // Partial — reduce their "Owes me" entries oldest-first (net drops by `pay`).
+            var remaining = pay
+            var i = 0
+            while i < splitEntries.count && remaining > 0.005 {
+                if splitEntries[i].personName == name && splitEntries[i].direction == .owesMe {
+                    let take = min(remaining, splitEntries[i].amount)
+                    splitEntries[i].amount -= take
+                    remaining -= take
+                    if splitEntries[i].amount <= 0.005 {
+                        splitEntries.remove(at: i)
+                        continue
+                    }
+                }
+                i += 1
+            }
         }
         takeSnapshot()
     }
