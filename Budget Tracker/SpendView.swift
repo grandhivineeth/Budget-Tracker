@@ -65,15 +65,24 @@ struct SpendThisMonthCard: View {
     @State private var showAdd = false
     @State private var calendarMonth: Date = Date().startOfMonth()
     @State private var selectedDate: Date? = nil
+    @State private var categoryFilters: Set<UUID> = []   // empty = all categories
 
     private var currentMonth: Date { Date().startOfMonth() }
     private var prevMonth:    Date { currentMonth.adding(months: -1) }
 
+    /// Categories that have any spend in the current or previous month (chip candidates).
+    private var chartCategories: [Category] {
+        store.categories.filter {
+            store.netSpent(categoryId: $0.id, month: currentMonth) > 0
+            || store.netSpent(categoryId: $0.id, month: prevMonth) > 0
+        }
+    }
+
     private var currentData: [(day: Int, cumulative: Double)] {
-        store.cumulativeSpend(for: currentMonth)
+        store.cumulativeSpend(for: currentMonth, categoryIds: categoryFilters)
     }
     private var prevData: [(day: Int, cumulative: Double)] {
-        store.cumulativeSpend(for: prevMonth)
+        store.cumulativeSpend(for: prevMonth, categoryIds: categoryFilters)
     }
     private var displayCurrentData: [(day: Int, cumulative: Double)] {
         let cal = Calendar.current
@@ -178,6 +187,11 @@ struct SpendThisMonthCard: View {
                 .padding(.bottom, 12)
             }
 
+            // ── Category filter chips ─────────────────────────────────
+            if !chartCategories.isEmpty {
+                categoryChips
+            }
+
             // ── Chart ────────────────────────────────────────────────
             if chartMode == .line {
                 SpendLineChart(
@@ -187,7 +201,8 @@ struct SpendThisMonthCard: View {
                 .frame(height: 200)
                 .padding(.bottom, 18)
             } else {
-                SpendCalendarHeatmap(month: calendarMonth, selectedDate: $selectedDate)
+                SpendCalendarHeatmap(month: calendarMonth, selectedDate: $selectedDate,
+                                     categoryIds: categoryFilters)
                     .padding(.horizontal, 18)
                     .padding(.bottom, 18)
             }
@@ -196,6 +211,56 @@ struct SpendThisMonthCard: View {
         .sheet(isPresented: $showAdd) { TransactionFormView() }
         .sheet(item: $selectedDate) { date in
             DayTransactionsSheet(date: date)
+        }
+    }
+
+    // ── Category filter chips (multi-select) ──────────────────────────
+    private var categoryChips: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                // "All" chip
+                let allActive = categoryFilters.isEmpty
+                Button {
+                    withAnimation(.easeInOut(duration: 0.15)) { categoryFilters.removeAll() }
+                } label: {
+                    Text("All")
+                        .font(.system(size: 13, weight: allActive ? .semibold : .regular))
+                        .foregroundStyle(allActive ? DS.text : DS.textSub)
+                        .padding(.horizontal, 12).padding(.vertical, 6)
+                        .background(
+                            Capsule().fill(allActive ? DS.surface : Color.clear)
+                                .overlay(Capsule().stroke(allActive ? DS.cardBorder : DS.textHint.opacity(0.3), lineWidth: 1))
+                        )
+                }
+                .buttonStyle(.plain)
+
+                ForEach(chartCategories) { c in
+                    let active = categoryFilters.contains(c.id)
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            if active { categoryFilters.remove(c.id) }
+                            else      { categoryFilters.insert(c.id) }
+                        }
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: c.icon)
+                                .font(.system(size: 11))
+                                .foregroundStyle(active ? .white : c.color)
+                            Text(c.name)
+                                .font(.system(size: 13, weight: active ? .semibold : .regular))
+                                .foregroundStyle(active ? .white : DS.text)
+                        }
+                        .padding(.horizontal, 12).padding(.vertical, 6)
+                        .background(
+                            Capsule().fill(active ? c.color : Color.clear)
+                                .overlay(Capsule().stroke(active ? c.color : DS.textHint.opacity(0.3), lineWidth: 1))
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 18)
+            .padding(.bottom, 14)
         }
     }
 
@@ -354,8 +419,9 @@ struct SpendCalendarHeatmap: View {
     @EnvironmentObject var store: DataStore
     let month: Date
     @Binding var selectedDate: Date?
+    var categoryIds: Set<UUID> = []
 
-    private var dailyData: [(day: Int, amount: Double)] { store.dailySpend(for: month) }
+    private var dailyData: [(day: Int, amount: Double)] { store.dailySpend(for: month, categoryIds: categoryIds) }
     private var maxSpend: Double { max(dailyData.map(\.amount).max() ?? 1, 1) }
     private var daysInMonth: Int {
         Calendar.current.range(of: .day, in: .month, for: month)?.count ?? 30

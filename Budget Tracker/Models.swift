@@ -356,22 +356,28 @@ final class DataStore: ObservableObject {
             .sorted { $0.date > $1.date }
     }
 
-    func dailySpend(for month: Date) -> [(day: Int, amount: Double)] {
+    /// Daily spend for a month. Pass `categoryIds` to restrict to those categories
+    /// (nil or empty = all categories).
+    func dailySpend(for month: Date, categoryIds: Set<UUID>? = nil) -> [(day: Int, amount: Double)] {
         let cal = Calendar.current
         guard let range = cal.range(of: .day, in: .month, for: month) else { return [] }
+        let filter = (categoryIds?.isEmpty == false) ? categoryIds : nil
         return range.map { day -> (Int, Double) in
             var comps = cal.dateComponents([.year, .month], from: month)
             comps.day = day
             guard let date = cal.date(from: comps) else { return (day, 0) }
             let total = transactions
-                .filter { cal.isDate($0.date, inSameDayAs: date) && !$0.isIncome }
+                .filter {
+                    cal.isDate($0.date, inSameDayAs: date) && !$0.isIncome
+                    && (filter == nil || filter!.contains($0.categoryId))
+                }
                 .reduce(0) { $0 + $1.expenseAmount }
             return (day, total)
         }
     }
 
-    func cumulativeSpend(for month: Date) -> [(day: Int, cumulative: Double)] {
-        let daily = dailySpend(for: month)
+    func cumulativeSpend(for month: Date, categoryIds: Set<UUID>? = nil) -> [(day: Int, cumulative: Double)] {
+        let daily = dailySpend(for: month, categoryIds: categoryIds)
         var running = 0.0
         return daily.map { entry in
             running += entry.amount
